@@ -1,0 +1,639 @@
+import React, { useCallback, useEffect, useState } from 'react';
+import { BellRing, RefreshCw, WifiOff, X } from 'lucide-react';
+import type {
+  GeofenceZone,
+  LatLngPoint,
+  OfflineQueuedAction,
+  PageRoute,
+  PushAlert,
+  Shipment,
+} from './types';
+import {
+  enqueueOfflineAction,
+  getOfflineQueue,
+  loadCachedAlerts,
+  loadCachedShipments,
+  saveCachedAlerts,
+  saveCachedShipments,
+  saveOfflineQueue,
+} from './utils/offlineStore';
+import {
+  dispatchSystemPushNotification,
+  getNotificationPermission,
+  requestNotificationPermission,
+  type NotificationPermissionState,
+} from './utils/notifications';
+import { distanceMeters, distanceToPolylineMeters } from './utils/geo';
+import { useOnlineStatus } from './hooks/useOnlineStatus';
+import { Navbar } from './components/Navbar';
+import { Footer } from './components/Footer';
+import { AlertsDrawer } from './components/AlertsDrawer';
+import { HomePage } from './pages/HomePage';
+import { TrackPage } from './pages/TrackPage';
+import { AnalyticsPage } from './pages/AnalyticsPage';
+import { ServicesPage } from './pages/ServicesPage';
+import { BusinessPage } from './pages/BusinessPage';
+import { AboutPage } from './pages/AboutPage';
+import { HelpPage } from './pages/HelpPage';
+import { ContactPage } from './pages/ContactPage';
+import { AdminPage } from './pages/AdminPage';
+
+export default function App() {
+  const [currentPage, setCurrentPage] = useState<PageRoute>('home');
+  const [shipments, setShipments] = useState<Shipment[]>(() => loadCachedShipments());
+  const [selectedTrackingNo, setSelectedTrackingNo] = useState<string>('');
+  const [alerts, setAlerts] = useState<PushAlert[]>(() => loadCachedAlerts());
+  const [activeToast, setActiveToast] = useState<PushAlert | null>(null);
+  const [alertsDrawerOpen, setAlertsDrawerOpen] = useState(false);
+
+  const [simulatedOffline, setSimulatedOffline] = useState(false);
+  const isOnline = useOnlineStatus(simulatedOffline);
+  const [offlineQueue, setOfflineQueue] = useState<OfflineQueuedAction[]>(() => getOfflineQueue());
+  const [syncing, setSyncing] = useState(false);
+
+  const [quotaExceeded, setQuotaExceeded] = useState(false);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermissionState>(() =>
+    getNotificationPermission()
+  );
+
+  // Listen for Google Maps Platform quota events (Tier 1 & 2 defense)
+  useEffect(() => {
+    const handleQuota = () => setQuotaExceeded(true);
+    window.addEventListener('gmp-quota-exceeded', handleQuota);
+    return () => window.removeEventListener('gmp-quota-exceeded', handleQuota);
+  }, []);
+
+  // Persist shipments & alerts locally for seamless offline mode
+  useEffect(() => {
+    saveCachedShipments(shipments);
+  }, [shipments]);
+
+  useEffect(() => {
+    saveCachedAlerts(alerts);
+  }, [alerts]);
+
+  const navigate = useCallback((page: PageRoute) => {
+    setCurrentPage(page);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
+
+  const triggerAlerts = useCallback(
+    (newAlerts: PushAlert[]) => {
+      if (newAlerts.length === 0) return;
+      setAlerts((prev) => {
+        const existingIds = new Set(prev.map((a) => a.id));
+        const unique = newAlerts.filter((a) => !existingIds.has(a.id));
+        return [...unique, ...prev].slice(0, 50);
+      });
+      const isAdminView = currentPage === 'admin';
+      const trackedMatch = selectedTrackingNo.trim().toUpperCase();
+      const visibleMatches = isAdminView
+        ? newAlerts
+        : trackedMatch
+          ? newAlerts.filter((a) => a.trackingNo.toUpperCase() === trackedMatch)
+          : [];
+      if (visibleMatches.length === 0) return;
+      const latest = visibleMatches[0];
+      setActiveToast(latest);
+      dispatchSystemPushNotification(latest.title, latest.message, latest.id);
+      setTimeout(() => {
+        setActiveToast((curr) => (curr?.id === latest.id ? null : curr));
+      }, 6000);
+    },
+    [currentPage, selectedTrackingNo]
+  );
+
+  // Initial sync + real-time SSE stream when online
+  useEffect(() => {
+    if (!isOnline) return;
+
+    let cancelled = false;
+    fetch('/api/shipments')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.ok) return;
+        if (Array.isArray(data.shipments) && data.shipments.length > 0) {
+          setShipments((prev) => {
+            // Merge any offline-booked local shipments not yet on server
+            const serverIds = new Set((data.shipments as Shipment[]).map((s) => s.tracking_no));
+            const localOnly = prev.filter((s) => !serverIds.has(s.tracking_no));
+            return [...localOnly, ...data.shipments];
+          });
+        }
+      })
+      .catch(() => {
+        // Fallback silently to cached shipments
+      });
+
+    const sse = new EventSource('/api/stream/tracking');
+    sse.addEventListener('position', (ev) => {
+      try {
+        const parsed = JSON.parse((ev as MessageEvent).data) as {
+          shipment: Shipment;
+          newAlerts?: PushAlert[];
+        };
+        setShipments((prev) =>
+          prev.map((s) => (s.tracking_no === parsed.shipment.tracking_no ? parsed.shipment : s))
+        );
+        if (parsed.newAlerts && parsed.newAlerts.length > 0) {
+          triggerAlerts(parsed.newAlerts);
+        }
+      } catch {
+        // Ignore malformed SSE payload
+      }
+    });
+
+    sse.addEventListener('geofences', (ev) => {
+      try {
+        const parsed = JSON.parse((ev as MessageEvent).data) as {
+          trackingNo: string;
+          geofences: GeofenceZone[];
+        };
+        setShipments((prev) =>
+          prev.map((s) =>
+            s.tracking_no === parsed.trackingNo ? { ...s, geofences: parsed.geofences } : s
+          )
+        );
+      } catch {
+        // Ignore
+      }
+    });
+
+    sse.addEventListener('shipment_created', (ev) => {
+      try {
+        const parsed = JSON.parse((ev as MessageEvent).data) as {
+          shipment: Shipment;
+          alert?: PushAlert;
+        };
+        setShipments((prev) =>
+          prev.some((s) => s.tracking_no === parsed.shipment.tracking_no)
+            ? prev
+            : [parsed.shipment, ...prev]
+        );
+        if (parsed.alert) triggerAlerts([parsed.alert]);
+      } catch {
+        // Ignore
+      }
+    });
+
+    sse.addEventListener('shipment_updated', (ev) => {
+      try {
+        const parsed = JSON.parse((ev as MessageEvent).data) as {
+          shipment: Shipment;
+          alert?: PushAlert;
+        };
+        setShipments((prev) =>
+          prev.map((s) => (s.tracking_no === parsed.shipment.tracking_no ? parsed.shipment : s))
+        );
+        if (parsed.alert) triggerAlerts([parsed.alert]);
+      } catch {
+        // Ignore
+      }
+    });
+
+    sse.addEventListener('shipment_deleted', (ev) => {
+      try {
+        const parsed = JSON.parse((ev as MessageEvent).data) as { trackingNo: string };
+        setShipments((prev) => prev.filter((s) => s.tracking_no !== parsed.trackingNo));
+      } catch {
+        // Ignore
+      }
+    });
+
+    sse.addEventListener('alert', (ev) => {
+      try {
+        const parsed = JSON.parse((ev as MessageEvent).data) as { alert: PushAlert };
+        if (parsed.alert) triggerAlerts([parsed.alert]);
+      } catch {
+        // Ignore
+      }
+    });
+
+    sse.addEventListener('reset', (ev) => {
+      try {
+        const parsed = JSON.parse((ev as MessageEvent).data) as {
+          shipments: Shipment[];
+          alerts: PushAlert[];
+        };
+        if (Array.isArray(parsed.shipments)) setShipments(parsed.shipments);
+        if (Array.isArray(parsed.alerts)) setAlerts(parsed.alerts);
+      } catch {
+        // Ignore
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      sse.close();
+    };
+  }, [isOnline, triggerAlerts]);
+
+  // Flush queued offline actions automatically when back online
+  const syncOfflineQueue = useCallback(async () => {
+    const queue = getOfflineQueue();
+    if (!isOnline || queue.length === 0 || syncing) return;
+    setSyncing(true);
+    try {
+      const res = await fetch('/api/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ actions: queue }),
+      });
+      if (res.ok) {
+        saveOfflineQueue([]);
+        setOfflineQueue([]);
+      }
+    } catch {
+      // Retain queue for next online window
+    } finally {
+      setSyncing(false);
+    }
+  }, [isOnline, syncing]);
+
+  useEffect(() => {
+    if (isOnline && offlineQueue.length > 0) {
+      syncOfflineQueue();
+    }
+  }, [isOnline, offlineQueue.length, syncOfflineQueue]);
+
+  // Update GPS Position (evaluates locally immediately + syncs to server or offline queue)
+  const handleUpdatePosition = useCallback(
+    async (
+      trackingNo: string,
+      coords: LatLngPoint & {
+        location?: string;
+        speedKmh?: number;
+        headingDeg?: number;
+        progress?: number;
+      },
+      deviationThresholdMeters: number
+    ) => {
+      if (isOnline) {
+        try {
+          const res = await fetch(`/api/shipments/${encodeURIComponent(trackingNo)}/position`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...coords, deviationThresholdMeters }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.shipment) {
+              setShipments((prev) =>
+                prev.map((s) => (s.tracking_no === data.shipment.tracking_no ? data.shipment : s))
+              );
+            }
+            if (Array.isArray(data.newAlerts) && data.newAlerts.length > 0) {
+              triggerAlerts(data.newAlerts);
+            }
+            return;
+          }
+        } catch {
+          // Fall through to offline local evaluation
+        }
+      }
+
+      // Offline / Low-connectivity local evaluation
+      const shortTime = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+      const newAlerts: PushAlert[] = [];
+
+      setShipments((prev) =>
+        prev.map((s) => {
+          if (s.tracking_no !== trackingNo) return s;
+
+          const updatedGeofences = s.geofences.map((gf) => {
+            if (!gf.active) return gf;
+            const d = distanceMeters(coords, gf);
+            if (d <= gf.radiusMeters && !gf.triggered) {
+              newAlerts.push({
+                id: `al-off-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+                trackingNo: s.tracking_no,
+                type: gf.type === 'destination' ? 'arrival' : 'geofence_enter',
+                title:
+                  gf.type === 'destination'
+                    ? `Driver Arrived at ${gf.name}`
+                    : `Entered ${gf.name} Geofence`,
+                message: `${s.courier.name} entered ${(gf.radiusMeters / 1000).toFixed(1)} km zone (Offline cached).`,
+                timestamp: `Today, ${shortTime}`,
+                read: false,
+                lat: coords.lat,
+                lng: coords.lng,
+              });
+              return { ...gf, triggered: true };
+            }
+            return gf;
+          });
+
+          const corridorDist = distanceToPolylineMeters(coords, s.routeWaypoints);
+          let nextStatus = s.status;
+          if (corridorDist > deviationThresholdMeters && s.status !== 'Delivered') {
+            nextStatus = 'Route Deviation';
+            newAlerts.push({
+              id: `al-dev-off-${Date.now()}`,
+              trackingNo: s.tracking_no,
+              type: 'deviation',
+              title: `Route Deviation Alert · ${s.tracking_no}`,
+              message: `Deviated ${(corridorDist / 1000).toFixed(1)} km from corridor (Offline cached).`,
+              timestamp: `Today, ${shortTime}`,
+              read: false,
+              lat: coords.lat,
+              lng: coords.lng,
+            });
+          } else if (updatedGeofences.some((g) => g.type === 'destination' && g.triggered)) {
+            nextStatus = 'Delivered';
+          }
+
+          return {
+            ...s,
+            status: nextStatus,
+            progress: coords.progress ?? s.progress,
+            current: {
+              lat: coords.lat,
+              lng: coords.lng,
+              location: coords.location || `${coords.lat.toFixed(4)}, ${coords.lng.toFixed(4)}`,
+              speedKmh: coords.speedKmh ?? s.current.speedKmh,
+              headingDeg: coords.headingDeg ?? s.current.headingDeg,
+            },
+            geofences: updatedGeofences,
+            routeWaypoints: [
+              ...s.routeWaypoints,
+              {
+                lat: coords.lat,
+                lng: coords.lng,
+                timestamp: `Offline ${shortTime}`,
+                speedKmh: coords.speedKmh ?? 64,
+                headingDeg: coords.headingDeg ?? 0,
+                label: coords.location || 'Offline GPS Checkpoint',
+              },
+            ],
+          };
+        })
+      );
+
+      if (newAlerts.length > 0) triggerAlerts(newAlerts);
+      setOfflineQueue(enqueueOfflineAction('gps_update', { trackingNo, coords }));
+    },
+    [isOnline, triggerAlerts]
+  );
+
+  const handleUpdateGeofences = useCallback(
+    async (trackingNo: string, geofences: GeofenceZone[]) => {
+      setShipments((prev) =>
+        prev.map((s) => (s.tracking_no === trackingNo ? { ...s, geofences } : s))
+      );
+
+      if (isOnline) {
+        try {
+          await fetch(`/api/geofences/${encodeURIComponent(trackingNo)}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ geofences }),
+          });
+          return;
+        } catch {
+          // Queue offline
+        }
+      }
+      setOfflineQueue(enqueueOfflineAction('geofence_update', { trackingNo, geofences }));
+    },
+    [isOnline]
+  );
+
+  const handleSubmitContact = useCallback(
+    async (payload: { name: string; email: string; subject: string; message: string }) => {
+      if (isOnline) {
+        try {
+          const res = await fetch('/api/contact', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          if (res.ok) return { queuedOffline: false };
+        } catch {
+          // Queue offline
+        }
+      }
+      setOfflineQueue(enqueueOfflineAction('contact', payload));
+      return { queuedOffline: true };
+    },
+    [isOnline]
+  );
+
+  const handleRequestNotifications = async () => {
+    const status = await requestNotificationPermission();
+    setNotificationPermission(status);
+    if (status === 'granted') {
+      dispatchSystemPushNotification(
+        'Golden Courier Push Alerts Enabled',
+        'You will now receive driver arrivals, route updates, and geofence deviation alerts.'
+      );
+    }
+  };
+
+  const isAdminView = currentPage === 'admin';
+  const normalizedTracked = selectedTrackingNo.trim().toUpperCase();
+  const unreadCount = (
+    isAdminView
+      ? alerts
+      : normalizedTracked
+        ? alerts.filter((a) => a.trackingNo.toUpperCase() === normalizedTracked)
+        : []
+  ).filter((a) => !a.read).length;
+
+  return (
+    <div className="min-h-screen flex flex-col bg-[#f2f2f2] text-[#1d1d1f]">
+      {/* Google Maps Platform Quota Banner (Demo Key Defense) */}
+      {quotaExceeded && (
+        <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm no-print">
+          <span>
+            Google Maps Platform quota reached. If you are the app owner, visit{' '}
+            <a
+              href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline font-semibold text-amber-950 hover:text-amber-800"
+            >
+              maps developer site
+            </a>{' '}
+            for instructions to update your account. (Offline vector maps remain active.)
+          </span>
+        </div>
+      )}
+
+      {/* Non-Intrusive Offline Mode Strip */}
+      {!isOnline && (
+        <div className="bg-[#1d1d1f] text-[#FFCC00] px-4 py-2 text-xs font-bold flex items-center justify-center gap-3 no-print">
+          <WifiOff className="w-3.5 h-3.5 shrink-0" />
+          <span>
+            Offline Mode Active — Cached routes, receipts & vector maps available.{' '}
+            {offlineQueue.length > 0 ? `(${offlineQueue.length} queued for sync)` : ''}
+          </span>
+          {simulatedOffline && (
+            <button
+              type="button"
+              onClick={() => setSimulatedOffline(false)}
+              className="underline text-white hover:text-[#FFCC00] cursor-pointer"
+            >
+              Restore Online
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Pending Offline Sync Banner when returning online */}
+      {isOnline && offlineQueue.length > 0 && (
+        <div className="bg-[#1B6CFF] text-white px-4 py-2 text-xs font-bold flex items-center justify-center gap-3 no-print">
+          <RefreshCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+          <span>{offlineQueue.length} offline action(s) ready to sync</span>
+          <button
+            type="button"
+            onClick={syncOfflineQueue}
+            className="underline cursor-pointer"
+          >
+            Sync now
+          </button>
+        </div>
+      )}
+
+      <Navbar
+        currentPage={currentPage}
+        onNavigate={navigate}
+        unreadAlertsCount={unreadCount}
+        onOpenAlerts={() => setAlertsDrawerOpen(true)}
+        isOnline={isOnline}
+        offlineQueueCount={offlineQueue.length}
+      />
+
+      <main className="flex-1">
+        {currentPage === 'home' && (
+          <HomePage
+            shipments={shipments}
+            onNavigate={navigate}
+            onTrackShipment={(id) => {
+              setSelectedTrackingNo(id);
+              navigate('track');
+            }}
+          />
+        )}
+
+        {currentPage === 'track' && (
+          <TrackPage
+            shipments={shipments}
+            selectedTrackingNo={selectedTrackingNo}
+            onSelectTracking={setSelectedTrackingNo}
+            onOpenPlayback={(id) => {
+              setSelectedTrackingNo(id);
+              navigate('analytics');
+            }}
+            alerts={alerts}
+            isOnline={isOnline}
+            quotaExceeded={quotaExceeded}
+          />
+        )}
+
+        {currentPage === 'analytics' && (
+          <AnalyticsPage
+            shipments={shipments}
+            selectedTrackingNo={selectedTrackingNo}
+            onSelectTracking={setSelectedTrackingNo}
+            isOnline={isOnline}
+            quotaExceeded={quotaExceeded}
+          />
+        )}
+
+        {currentPage === 'services' && <ServicesPage onNavigate={navigate} />}
+
+        {currentPage === 'business' && <BusinessPage onNavigate={navigate} />}
+        {currentPage === 'about' && <AboutPage onNavigate={navigate} />}
+        {currentPage === 'help' && <HelpPage onNavigate={navigate} />}
+        {currentPage === 'contact' && <ContactPage onSubmitContact={handleSubmitContact} />}
+        {currentPage === 'admin' && (
+          <AdminPage
+            shipments={shipments}
+            alerts={alerts}
+            selectedTrackingNo={selectedTrackingNo}
+            onSelectTracking={setSelectedTrackingNo}
+            onNavigate={navigate}
+            isOnline={isOnline}
+            simulatedOffline={simulatedOffline}
+            onToggleSimulatedOffline={() => setSimulatedOffline((v) => !v)}
+            offlineQueue={offlineQueue}
+            onSyncNow={syncOfflineQueue}
+            quotaExceeded={quotaExceeded}
+            notificationPermission={notificationPermission}
+            onRequestNotifications={handleRequestNotifications}
+            onUpdatePosition={handleUpdatePosition}
+            onUpdateGeofences={handleUpdateGeofences}
+            onMarkAllAlertsRead={() => setAlerts((prev) => prev.map((a) => ({ ...a, read: true })))}
+            onAdminShipmentsChange={setShipments}
+            onAdminAlertsChange={setAlerts}
+            onTriggerAlert={(al) => triggerAlerts([al])}
+          />
+        )}
+      </main>
+
+      <Footer onNavigate={navigate} />
+
+      {/* Live Push Notification In-App Toast */}
+      {activeToast && (
+        <div
+          role="status"
+          className="fixed bottom-16 lg:bottom-6 right-4 left-4 sm:left-auto sm:w-96 z-50 bg-[#1d1d1f] text-white border-2 border-[#FFCC00] p-4 shadow-2xl flex items-start gap-3 no-print"
+        >
+          <BellRing className="w-5 h-5 text-[#FFCC00] shrink-0 mt-0.5" />
+          <div className="flex-1 min-w-0">
+            <p className="text-xs font-extrabold text-[#FFCC00]">{activeToast.title}</p>
+            <p className="text-xs text-neutral-200 mt-1">{activeToast.message}</p>
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedTrackingNo(activeToast.trackingNo);
+                setActiveToast(null);
+                navigate('track');
+              }}
+              className="mt-2 text-[11px] font-bold underline text-white hover:text-[#FFCC00] cursor-pointer"
+            >
+              View on Live Map
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActiveToast(null)}
+            aria-label="Dismiss notification"
+            className="text-neutral-400 hover:text-white cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Alerts & Offline Settings Slide-Over Drawer */}
+      <AlertsDrawer
+        open={alertsDrawerOpen}
+        onClose={() => setAlertsDrawerOpen(false)}
+        alerts={alerts}
+        selectedTrackingNo={selectedTrackingNo}
+        isAdmin={isAdminView}
+        onMarkAllRead={() =>
+          setAlerts((prev) =>
+            prev.map((a) =>
+              isAdminView || (normalizedTracked && a.trackingNo.toUpperCase() === normalizedTracked)
+                ? { ...a, read: true }
+                : a
+            )
+          )
+        }
+        onSelectShipment={(id) => {
+          setSelectedTrackingNo(id);
+          navigate('track');
+        }}
+        notificationPermission={notificationPermission}
+        onRequestNotifications={handleRequestNotifications}
+        isOnline={isOnline}
+        simulatedOffline={simulatedOffline}
+        onToggleSimulatedOffline={() => setSimulatedOffline((v) => !v)}
+        offlineQueueCount={offlineQueue.length}
+        onSyncNow={syncOfflineQueue}
+      />
+    </div>
+  );
+}

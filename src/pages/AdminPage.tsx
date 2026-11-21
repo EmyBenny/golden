@@ -1,0 +1,2279 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  ArrowUpRight,
+  BellRing,
+  Building2,
+  CheckCircle2,
+  Download,
+  FileSpreadsheet,
+  Inbox,
+  LayoutDashboard,
+  LineChart,
+  Navigation,
+  Package,
+  Pencil,
+  Plus,
+  QrCode,
+  Radar,
+  Receipt,
+  RefreshCw,
+  RotateCcw,
+  Search,
+  Send,
+  ShieldCheck,
+  Trash2,
+  Wifi,
+  WifiOff,
+  X,
+} from 'lucide-react';
+import { ANALYTICS_DAILY_VOLUME, FAQ_ITEMS, REVIEWS } from '../data/seedData';
+import type {
+  ContactMessage,
+  GeofenceZone,
+  LatLngPoint,
+  OfflineQueuedAction,
+  PageRoute,
+  PushAlert,
+  ReturnRequest,
+  Shipment,
+} from '../types';
+import { MapViewport } from '../components/MapViewport';
+import { StampedReceiptCard } from '../components/StampedReceiptCard';
+import type { NotificationPermissionState } from '../utils/notifications';
+
+type AdminTab =
+  | 'overview'
+  | 'shipments'
+  | 'gps'
+  | 'alerts'
+  | 'receipts'
+  | 'analytics'
+  | 'inbox'
+  | 'system';
+
+interface AdminPageProps {
+  shipments: Shipment[];
+  alerts: PushAlert[];
+  selectedTrackingNo: string;
+  onSelectTracking: (trackingNo: string) => void;
+  onNavigate: (page: PageRoute) => void;
+  isOnline: boolean;
+  simulatedOffline: boolean;
+  onToggleSimulatedOffline: () => void;
+  offlineQueue: OfflineQueuedAction[];
+  onSyncNow: () => void;
+  quotaExceeded: boolean;
+  notificationPermission: NotificationPermissionState;
+  onRequestNotifications: () => void;
+  onUpdatePosition: (
+    trackingNo: string,
+    coords: LatLngPoint & {
+      location?: string;
+      speedKmh?: number;
+      headingDeg?: number;
+      progress?: number;
+    },
+    deviationThresholdMeters: number
+  ) => Promise<void>;
+  onUpdateGeofences: (trackingNo: string, geofences: GeofenceZone[]) => Promise<void>;
+  onMarkAllAlertsRead: () => void;
+  onAdminShipmentsChange: (nextShipments: Shipment[]) => void;
+  onAdminAlertsChange: (nextAlerts: PushAlert[]) => void;
+  onTriggerAlert: (alert: PushAlert) => void;
+}
+
+const STATUS_OPTIONS = [
+  'Pending',
+  'Picked Up',
+  'Customs Clearance',
+  'In Transit',
+  'Arrived at Hub',
+  'Out for Delivery',
+  'Delivered',
+  'Route Deviation',
+] as const;
+
+const PAYMENT_STATES: Array<Shipment['payment']['state']> = [
+  'Paid',
+  'Partial',
+  'Customs Cleared',
+  'Refunded',
+];
+
+function parseCurrency(val: string): number {
+  const num = Number(val.replace(/[^0-9.-]+/g, ''));
+  return Number.isFinite(num) ? num : 0;
+}
+
+export const AdminPage: React.FC<AdminPageProps> = ({
+  shipments,
+  alerts,
+  selectedTrackingNo,
+  onSelectTracking,
+  onNavigate,
+  isOnline,
+  simulatedOffline,
+  onToggleSimulatedOffline,
+  offlineQueue,
+  onSyncNow,
+  quotaExceeded,
+  notificationPermission,
+  onRequestNotifications,
+  onUpdatePosition,
+  onUpdateGeofences,
+  onMarkAllAlertsRead,
+  onAdminShipmentsChange,
+  onAdminAlertsChange,
+  onTriggerAlert,
+}) => {
+  const [activeTab, setActiveTab] = useState<AdminTab>('overview');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string>('All');
+  const [bannerFeedback, setBannerFeedback] = useState<string | null>(null);
+
+  // Admin Contact Inbox & Returns state loaded from server
+  const [contactMessages, setContactMessages] = useState<ContactMessage[]>([]);
+  const [returnRequests, setReturnRequests] = useState<ReturnRequest[]>([]);
+  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
+
+  // Create Shipment Modal state
+  const [createOpen, setCreateOpen] = useState(false);
+  const [previewReceiptShipment, setPreviewReceiptShipment] = useState<Shipment | null>(null);
+  const [newForm, setNewForm] = useState({
+    trackingNo: '',
+    originCity: 'London, UK',
+    originLat: '51.5072',
+    originLng: '-0.1276',
+    destCity: 'Edinburgh, UK',
+    destLat: '55.9533',
+    destLng: '-3.1883',
+    senderName: 'Golden Courier Dispatch',
+    receiverName: 'Claire Thornton',
+    courierName: 'Richard Dheo',
+    courierVehicle: 'EV Sprinter · TP-402',
+    service: 'Express' as Shipment['service'],
+    packageDesc: 'Electronics & calibration kit',
+    weightKg: '3.2',
+    totalFee: '34.50',
+    eta: 'Tomorrow, 15:00',
+  });
+
+  // Edit Shipment & Scan Checkpoint Drawer
+  const [editingTrackingNo, setEditingTrackingNo] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState({
+    status: 'In Transit',
+    progress: 60,
+    currentLocation: '',
+    eta: '',
+    courierName: '',
+    courierVehicle: '',
+    paymentState: 'Paid' as Shipment['payment']['state'],
+    scanNote: '',
+  });
+
+  // Live GPS & Geofence Admin controls
+  const activeShipment =
+    shipments.find((s) => s.tracking_no === selectedTrackingNo) || shipments[0];
+  const [gpsForm, setGpsForm] = useState({
+    lat: String(activeShipment?.current.lat ?? 52.4862),
+    lng: String(activeShipment?.current.lng ?? -1.8904),
+    location: activeShipment?.current.location ?? 'Birmingham Hub, UK',
+    speedKmh: String(activeShipment?.current.speedKmh ?? 78),
+    headingDeg: String(activeShipment?.current.headingDeg ?? 335),
+  });
+  const [newGfForm, setNewGfForm] = useState({
+    name: 'Checkpoint Geofence',
+    lat: String(activeShipment?.current.lat ?? 52.4862),
+    lng: String(activeShipment?.current.lng ?? -1.8904),
+    radiusKm: '6',
+    type: 'hub' as GeofenceZone['type'],
+  });
+
+  // Broadcast Alert Form
+  const [broadcastForm, setBroadcastForm] = useState({
+    trackingNo: activeShipment?.tracking_no || 'TP26AB100245',
+    type: 'route_update' as PushAlert['type'],
+    title: 'Priority Corridor Clearance',
+    message: 'M6 express corridor cleared; updated ETA confirmed 18 minutes earlier.',
+  });
+
+  // Return Issuance Form
+  const [newReturnForm, setNewReturnForm] = useState({
+    code: '',
+    retailer: 'Soho Footwear Ltd',
+    dropPoint: 'Testford Lockers #14, London',
+  });
+
+  // Bulk CSV Importer
+  const [csvText, setCsvText] = useState(
+    'TP26CS880101,London UK,Bristol UK,Atelier Soho,Express,1.8,19.99\nTP26CS880102,Manchester UK,Leeds UK,North Hub Store,Standard,4.4,24.50'
+  );
+
+  const showToast = (msg: string) => {
+    setBannerFeedback(msg);
+    setTimeout(() => {
+      setBannerFeedback((curr) => (curr === msg ? null : curr));
+    }, 4500);
+  };
+
+  const fetchAdminOverview = async () => {
+    if (!isOnline) return;
+    try {
+      const res = await fetch('/api/admin/overview');
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.contactMessages)) setContactMessages(data.contactMessages);
+        if (Array.isArray(data.returnRequests)) setReturnRequests(data.returnRequests);
+      }
+    } catch {
+      // Retain local state when offline
+    }
+  };
+
+  useEffect(() => {
+    fetchAdminOverview();
+  }, [isOnline]);
+
+  useEffect(() => {
+    if (!activeShipment) return;
+    setGpsForm({
+      lat: String(activeShipment.current.lat),
+      lng: String(activeShipment.current.lng),
+      location: activeShipment.current.location,
+      speedKmh: String(activeShipment.current.speedKmh),
+      headingDeg: String(activeShipment.current.headingDeg),
+    });
+    setNewGfForm((prev) => ({
+      ...prev,
+      lat: String(activeShipment.current.lat),
+      lng: String(activeShipment.current.lng),
+    }));
+  }, [activeShipment?.tracking_no, activeShipment?.current.lat, activeShipment?.current.lng]);
+
+  const openEditor = (s: Shipment) => {
+    setEditingTrackingNo(s.tracking_no);
+    setEditDraft({
+      status: s.status,
+      progress: s.progress,
+      currentLocation: s.current.location,
+      eta: s.eta,
+      courierName: s.courier.name,
+      courierVehicle: s.courier.vehicle,
+      paymentState: s.payment.state,
+      scanNote: '',
+    });
+  };
+
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingTrackingNo) return;
+    const payload = {
+      status: editDraft.status,
+      progress: Number(editDraft.progress),
+      currentLocation: editDraft.currentLocation,
+      eta: editDraft.eta,
+      courierName: editDraft.courierName,
+      courierVehicle: editDraft.courierVehicle,
+      paymentState: editDraft.paymentState,
+      eventNote: editDraft.scanNote.trim() || undefined,
+    };
+
+    if (isOnline) {
+      try {
+        const res = await fetch(`/api/admin/shipments/${encodeURIComponent(editingTrackingNo)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          onAdminShipmentsChange(
+            shipments.map((s) => (s.tracking_no === editingTrackingNo ? data.shipment : s))
+          );
+          setEditingTrackingNo(null);
+          showToast(`Updated ${editingTrackingNo} (${editDraft.status})`);
+          return;
+        }
+      } catch {
+        // Fallback locally
+      }
+    }
+
+    onAdminShipmentsChange(
+      shipments.map((s) =>
+        s.tracking_no === editingTrackingNo
+          ? {
+              ...s,
+              status: editDraft.status,
+              progress: Number(editDraft.progress),
+              eta: editDraft.eta,
+              current: { ...s.current, location: editDraft.currentLocation },
+              courier: {
+                ...s.courier,
+                name: editDraft.courierName,
+                vehicle: editDraft.courierVehicle,
+              },
+              payment: { ...s.payment, state: editDraft.paymentState },
+            }
+          : s
+      )
+    );
+    setEditingTrackingNo(null);
+    showToast(`Updated ${editingTrackingNo} locally`);
+  };
+
+  const handleCreateShipment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const payload = {
+      trackingNo: newForm.trackingNo.trim() || undefined,
+      originCity: newForm.originCity.trim(),
+      originLat: Number(newForm.originLat) || 51.5072,
+      originLng: Number(newForm.originLng) || -0.1276,
+      destCity: newForm.destCity.trim(),
+      destLat: Number(newForm.destLat) || 53.4808,
+      destLng: Number(newForm.destLng) || -2.2426,
+      senderName: newForm.senderName.trim(),
+      receiverName: newForm.receiverName.trim(),
+      courierName: newForm.courierName.trim(),
+      courierVehicle: newForm.courierVehicle.trim(),
+      service: newForm.service,
+      packageDesc: newForm.packageDesc.trim(),
+      weightKg: Number(newForm.weightKg) || 2.0,
+      totalFee: Number(newForm.totalFee) || 24.99,
+      eta: newForm.eta.trim(),
+    };
+
+    if (isOnline) {
+      try {
+        const res = await fetch('/api/admin/shipments', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (res.ok && data.shipment) {
+          onAdminShipmentsChange([data.shipment, ...shipments]);
+          if (data.alert) onTriggerAlert(data.alert);
+          onSelectTracking(data.shipment.tracking_no);
+          setCreateOpen(false);
+          setNewForm((f) => ({ ...f, trackingNo: '' }));
+          showToast(`Dispatched shipment ${data.shipment.tracking_no}`);
+          return;
+        } else {
+          showToast(data.error || 'Could not create shipment');
+          return;
+        }
+      } catch {
+        // Fallback below
+      }
+    }
+
+    const rand = Math.floor(100000 + Math.random() * 899999);
+    const trackingNo = payload.trackingNo || `TP26AD${rand}`;
+    const localShipment: Shipment = {
+      tracking_no: trackingNo,
+      receipt_no: `RCP-OFFLINE-${String(rand).slice(0, 4)}`,
+      company: 'Golden Courier',
+      status: 'Picked Up',
+      service: payload.service,
+      package: payload.packageDesc,
+      weight: payload.weightKg,
+      dimensionsCm: '35x25x18 cm',
+      pieces: 1,
+      progress: 20,
+      origin: { city: payload.originCity, lat: payload.originLat, lng: payload.originLng },
+      dest: { city: payload.destCity, lat: payload.destLat, lng: payload.destLng },
+      current: {
+        lat: payload.originLat,
+        lng: payload.originLng,
+        location: `${payload.originCity} Hub`,
+        speedKmh: 0,
+        headingDeg: 0,
+      },
+      sender: { name: payload.senderName, city: payload.originCity, address: payload.originCity },
+      receiver: { name: payload.receiverName, city: payload.destCity, address: payload.destCity },
+      courier: { name: payload.courierName, phone: '+44 7700 900789', vehicle: payload.courierVehicle },
+      pickup: 'Today',
+      eta: payload.eta,
+      payment: {
+        state: 'Paid',
+        total: `£${payload.totalFee.toFixed(2)}`,
+        paid: `£${payload.totalFee.toFixed(2)}`,
+        balance: '£0.00',
+        shippingFee: `£${(payload.totalFee / 1.2).toFixed(2)}`,
+        insuranceFee: '£0.00',
+        vatFee: `£${(payload.totalFee - payload.totalFee / 1.2).toFixed(2)}`,
+        method: 'Admin Offline Dispatch',
+        reference: `RCP-${rand}`,
+        issuedAt: new Date().toLocaleString('en-GB'),
+      },
+      distance_km: 310,
+      updated_at: new Date().toISOString(),
+      events: [
+        {
+          status: 'Picked Up',
+          location: payload.originCity,
+          lat: payload.originLat,
+          lng: payload.originLng,
+          note: 'Created via Admin Portal (Offline)',
+          event_time: new Date().toISOString(),
+          time_h: 'Just now',
+        },
+      ],
+      routeWaypoints: [
+        { lat: payload.originLat, lng: payload.originLng, timestamp: 'Just now', speedKmh: 0, headingDeg: 0, label: payload.originCity },
+        { lat: payload.destLat, lng: payload.destLng, timestamp: payload.eta, speedKmh: 0, headingDeg: 0, label: payload.destCity },
+      ],
+      geofences: [
+        { id: `gf-o-${rand}`, name: `${payload.originCity} Origin`, lat: payload.originLat, lng: payload.originLng, radiusMeters: 5000, type: 'origin', active: true, triggered: true },
+        { id: `gf-d-${rand}`, name: `${payload.destCity} Arrival Zone`, lat: payload.destLat, lng: payload.destLng, radiusMeters: 6500, type: 'destination', active: true, triggered: false },
+      ],
+    };
+    onAdminShipmentsChange([localShipment, ...shipments]);
+    onSelectTracking(trackingNo);
+    setCreateOpen(false);
+    showToast(`Dispatched ${trackingNo} offline`);
+  };
+
+  const handleDeleteShipment = async (trackingNo: string) => {
+    if (shipments.length <= 1) {
+      showToast('Keep at least one active shipment in the fleet.');
+      return;
+    }
+    if (isOnline) {
+      try {
+        await fetch(`/api/admin/shipments/${encodeURIComponent(trackingNo)}`, { method: 'DELETE' });
+      } catch {
+        // Proceed with local removal
+      }
+    }
+    const remaining = shipments.filter((s) => s.tracking_no !== trackingNo);
+    onAdminShipmentsChange(remaining);
+    if (selectedTrackingNo === trackingNo && remaining[0]) {
+      onSelectTracking(remaining[0].tracking_no);
+    }
+    showToast(`Deleted shipment ${trackingNo}`);
+  };
+
+  const handleQuickPaymentStamp = async (
+    trackingNo: string,
+    paymentState: Shipment['payment']['state']
+  ) => {
+    if (isOnline) {
+      try {
+        const res = await fetch(`/api/admin/shipments/${encodeURIComponent(trackingNo)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ paymentState }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          onAdminShipmentsChange(
+            shipments.map((s) => (s.tracking_no === trackingNo ? data.shipment : s))
+          );
+          showToast(`${trackingNo} receipt stamped as ${paymentState.toUpperCase()}`);
+          return;
+        }
+      } catch {
+        // Fallback locally
+      }
+    }
+    onAdminShipmentsChange(
+      shipments.map((s) =>
+        s.tracking_no === trackingNo
+          ? {
+              ...s,
+              payment: {
+                ...s.payment,
+                state: paymentState,
+                paid: paymentState === 'Paid' ? s.payment.total : s.payment.paid,
+                balance: paymentState === 'Paid' || paymentState === 'Refunded' ? '£0.00' : s.payment.balance,
+              },
+            }
+          : s
+      )
+    );
+    showToast(`${trackingNo} stamped ${paymentState}`);
+  };
+
+  const handleBroadcastAlert = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!broadcastForm.title.trim() || !broadcastForm.message.trim()) return;
+    if (isOnline) {
+      try {
+        const res = await fetch('/api/admin/alerts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(broadcastForm),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.alert) onTriggerAlert(data.alert);
+          showToast(`Broadcast sent: ${broadcastForm.title}`);
+          return;
+        }
+      } catch {
+        // Fallback locally
+      }
+    }
+    onTriggerAlert({
+      id: `al-adm-loc-${Date.now()}`,
+      trackingNo: broadcastForm.trackingNo,
+      type: broadcastForm.type,
+      title: broadcastForm.title,
+      message: broadcastForm.message,
+      timestamp: 'Just now',
+      read: false,
+      lat: activeShipment?.current.lat ?? 51.5072,
+      lng: activeShipment?.current.lng ?? -0.1276,
+    });
+    showToast(`Local push alert dispatched`);
+  };
+
+  const handleToggleContactStatus = async (msg: ContactMessage) => {
+    const nextStatus = msg.status === 'resolved' ? 'open' : 'resolved';
+    const note = noteDrafts[msg.id] ?? msg.adminNote ?? '';
+    if (isOnline) {
+      try {
+        const res = await fetch(`/api/admin/contact/${encodeURIComponent(msg.id)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: nextStatus, adminNote: note }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setContactMessages((prev) => prev.map((m) => (m.id === msg.id ? data.entry : m)));
+          showToast(`Message marked ${nextStatus}`);
+          return;
+        }
+      } catch {
+        // Fallback locally
+      }
+    }
+    setContactMessages((prev) =>
+      prev.map((m) => (m.id === msg.id ? { ...m, status: nextStatus, adminNote: note } : m))
+    );
+  };
+
+  const handleIssueReturn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const code =
+      newReturnForm.code.trim().toUpperCase() ||
+      `RET-UK-${Math.floor(1000 + Math.random() * 8999)}`;
+    if (isOnline) {
+      try {
+        const res = await fetch('/api/admin/returns', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            code,
+            retailer: newReturnForm.retailer,
+            dropPoint: newReturnForm.dropPoint,
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setReturnRequests((prev) => [data.entry, ...prev]);
+          setNewReturnForm((r) => ({ ...r, code: '' }));
+          showToast(`Return QR pass ${code} issued`);
+          return;
+        }
+      } catch {
+        // Fallback locally
+      }
+    }
+    setReturnRequests((prev) => [
+      {
+        id: `ret-${Date.now()}`,
+        code,
+        retailer: newReturnForm.retailer,
+        dropPoint: newReturnForm.dropPoint,
+        status: 'Issued',
+        createdAt: 'Just now',
+      },
+      ...prev,
+    ]);
+    setNewReturnForm((r) => ({ ...r, code: '' }));
+  };
+
+  const handleCycleReturnStatus = async (ret: ReturnRequest) => {
+    const order: Array<ReturnRequest['status']> = ['Issued', 'Scanned', 'In Transit', 'Refunded'];
+    const next = order[(order.indexOf(ret.status) + 1) % order.length];
+    if (isOnline) {
+      try {
+        await fetch(`/api/admin/returns/${encodeURIComponent(ret.id)}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: next }),
+        });
+      } catch {
+        // Local update
+      }
+    }
+    setReturnRequests((prev) => prev.map((r) => (r.id === ret.id ? { ...r, status: next } : r)));
+  };
+
+  const handleBulkCsvImport = async () => {
+    const lines = csvText
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (lines.length === 0) return;
+
+    let created = 0;
+    const nextList = [...shipments];
+    for (const line of lines) {
+      const [trackingNo, originCity, destCity, receiverName, service, weightKg, totalFee] =
+        line.split(',').map((s) => s.trim());
+      if (!originCity || !destCity) continue;
+      try {
+        const res = await fetch('/api/admin/shipments', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            trackingNo,
+            originCity,
+            destCity,
+            receiverName: receiverName || 'Batch Recipient',
+            service: service || 'Standard',
+            weightKg: Number(weightKg) || 2.0,
+            totalFee: Number(totalFee) || 19.99,
+          }),
+        });
+        if (res.ok) {
+          const data = await res.json();
+          nextList.unshift(data.shipment);
+          created++;
+        }
+      } catch {
+        // Skip failed row
+      }
+    }
+    onAdminShipmentsChange(nextList);
+    showToast(`Imported ${created} batch shipment(s) into live fleet`);
+  };
+
+  const handleResetDemo = async () => {
+    if (isOnline) {
+      try {
+        const res = await fetch('/api/admin/reset', { method: 'POST' });
+        if (res.ok) {
+          const data = await res.json();
+          onAdminShipmentsChange(data.shipments);
+          onAdminAlertsChange(data.alerts);
+          onSelectTracking(data.shipments[0]?.tracking_no || 'TP26AB100245');
+          showToast('Fleet & alerts restored to default demo seed data');
+          return;
+        }
+      } catch {
+        // Ignore
+      }
+    }
+  };
+
+  const handleExportFleetCsv = () => {
+    const header = 'TrackingNo,ReceiptNo,Status,Service,Origin,Dest,Courier,Progress,Total,PaymentState\n';
+    const rows = shipments
+      .map(
+        (s) =>
+          `${s.tracking_no},${s.receipt_no},"${s.status}",${s.service},"${s.origin.city}","${s.dest.city}","${s.courier.name}",${s.progress}%,${s.payment.total},${s.payment.state}`
+      )
+      .join('\n');
+    const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `golden_courier_fleet_admin_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const filteredShipments = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return shipments.filter((s) => {
+      const matchesStatus = statusFilter === 'All' || s.status === statusFilter;
+      const matchesQuery =
+        !q ||
+        s.tracking_no.toLowerCase().includes(q) ||
+        s.receipt_no.toLowerCase().includes(q) ||
+        s.origin.city.toLowerCase().includes(q) ||
+        s.dest.city.toLowerCase().includes(q) ||
+        s.receiver.name.toLowerCase().includes(q) ||
+        s.courier.name.toLowerCase().includes(q);
+      return matchesStatus && matchesQuery;
+    });
+  }, [shipments, searchQuery, statusFilter]);
+
+  const metrics = useMemo(() => {
+    const totalRevenue = shipments.reduce((sum, s) => sum + parseCurrency(s.payment.paid), 0);
+    const pendingBalance = shipments.reduce((sum, s) => sum + parseCurrency(s.payment.balance), 0);
+    const inTransitCount = shipments.filter(
+      (s) => s.status !== 'Delivered' && s.status !== 'Pending'
+    ).length;
+    const deliveredCount = shipments.filter((s) => s.status === 'Delivered').length;
+    const deviationsCount = shipments.filter((s) => s.status === 'Route Deviation').length;
+    const unreadAlerts = alerts.filter((a) => !a.read).length;
+    const openInbox = contactMessages.filter((m) => m.status === 'open').length;
+    return {
+      totalRevenue,
+      pendingBalance,
+      inTransitCount,
+      deliveredCount,
+      deviationsCount,
+      unreadAlerts,
+      openInbox,
+    };
+  }, [shipments, alerts, contactMessages]);
+
+  const NAV_ITEMS: Array<{ id: AdminTab; label: string; icon: React.ComponentType<{ className?: string }>; badge?: number }> = [
+    { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+    { id: 'shipments', label: 'Shipments & Dispatch', icon: Package, badge: shipments.length },
+    { id: 'gps', label: 'Live GPS & Geofences', icon: Radar },
+    { id: 'alerts', label: 'Push Alerts', icon: BellRing, badge: metrics.unreadAlerts },
+    { id: 'receipts', label: 'Payments & Receipts', icon: Receipt },
+    { id: 'analytics', label: 'Fleet Analytics', icon: LineChart },
+    { id: 'inbox', label: 'Inbox & Returns', icon: Inbox, badge: metrics.openInbox },
+    { id: 'system', label: 'Business & Offline Sync', icon: Building2, badge: offlineQueue.length },
+  ];
+
+  return (
+    <div className="max-w-[1440px] mx-auto px-4 sm:px-6 py-6 pb-24 lg:pb-12">
+      {/* Top Breadcrumb & Primary Action Contract */}
+      <div className="bg-white border border-neutral-200 px-5 py-4 mb-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#6b6b70]">
+            <span>Golden Courier Ops</span>
+            <span>/</span>
+            <span className="text-[#1d1d1f]">Admin Portal</span>
+            <span>/</span>
+            <span className="text-[#1B6CFF]">
+              {NAV_ITEMS.find((i) => i.id === activeTab)?.label}
+            </span>
+          </div>
+          <h1 className="font-display text-2xl sm:text-3xl text-[#1d1d1f] mt-1">
+            Operations Control Center
+          </h1>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          <button
+            type="button"
+            onClick={() => setCreateOpen(true)}
+            className="inline-flex items-center gap-2 px-4 py-2.5 bg-[#FFCC00] text-[#1d1d1f] border border-[#1d1d1f] text-xs font-extrabold hover:bg-[#1d1d1f] hover:text-[#FFCC00] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>New Dispatch</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleExportFleetCsv}
+            className="inline-flex items-center gap-2 px-4 py-2.5 bg-[#1d1d1f] text-white text-xs font-bold hover:bg-black hover:text-[#FFCC00] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Download className="w-4 h-4" />
+            <span>Export Fleet CSV</span>
+          </button>
+        </div>
+      </div>
+
+      {bannerFeedback && (
+        <div
+          role="status"
+          className="mb-6 bg-[#1d1d1f] text-[#FFCC00] border border-[#FFCC00] px-4 py-3 text-xs font-bold flex items-center justify-between gap-3"
+        >
+          <span className="inline-flex items-center gap-2">
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+            {bannerFeedback}
+          </span>
+          <button type="button" onClick={() => setBannerFeedback(null)} className="cursor-pointer">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Workspace Grid: Left Sidebar + Main Viewport */}
+      <div className="grid lg:grid-cols-12 gap-6 items-start">
+        {/* Left Navigation Sidebar */}
+        <aside className="lg:col-span-3 bg-white border border-neutral-200 p-3 space-y-1 lg:sticky lg:top-20">
+          <div className="px-3 py-2.5 mb-2 bg-[#1d1d1f] text-white flex items-center justify-between">
+            <div className="min-w-0">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-[#FFCC00]">
+                Signed in as Admin
+              </p>
+              <p className="text-xs font-bold truncate">Ops Lead · uzorbenny51@gmail.com</p>
+            </div>
+            <ShieldCheck className="w-5 h-5 text-[#FFCC00] shrink-0" />
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-1 gap-1">
+            {NAV_ITEMS.map((item) => {
+              const Icon = item.icon;
+              const active = activeTab === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setActiveTab(item.id)}
+                  className={`w-full flex items-center justify-between gap-2 px-3 py-2.5 text-left text-xs font-bold transition-colors cursor-pointer ${
+                    active
+                      ? 'bg-[#FFCC00] text-[#1d1d1f] border-l-4 border-[#1d1d1f]'
+                      : 'text-[#1d1d1f] hover:bg-[#f2f2f2]'
+                  }`}
+                >
+                  <span className="inline-flex items-center gap-2.5 min-w-0">
+                    <Icon className="w-4 h-4 shrink-0" />
+                    <span className="truncate">{item.label}</span>
+                  </span>
+                  {item.badge !== undefined && item.badge > 0 && (
+                    <span
+                      className={`px-1.5 py-0.5 text-[10px] font-mono-tabular font-bold ${
+                        active ? 'bg-[#1d1d1f] text-[#FFCC00]' : 'bg-neutral-200 text-[#1d1d1f]'
+                      }`}
+                    >
+                      {item.badge}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* All App Pages Quick Switcher */}
+          <div className="pt-4 mt-4 border-t border-neutral-200 px-1">
+            <p className="px-2 text-[10px] font-extrabold uppercase tracking-wider text-[#6b6b70] mb-2">
+              Jump to App Page
+            </p>
+            <div className="grid grid-cols-2 gap-1.5">
+              {(
+                [
+                  ['home', 'Home'],
+                  ['track', 'Live Track'],
+                  ['services', 'Services'],
+                  ['business', 'Business'],
+                  ['about', 'About'],
+                  ['help', 'Help'],
+                  ['contact', 'Contact'],
+                  ['analytics', 'Playback'],
+                ] as Array<[PageRoute, string]>
+              ).map(([route, label]) => (
+                <button
+                  key={route}
+                  type="button"
+                  onClick={() => onNavigate(route)}
+                  className="px-2.5 py-1.5 bg-[#f2f2f2] hover:bg-[#1d1d1f] hover:text-[#FFCC00] text-[11px] font-bold text-[#1d1d1f] flex items-center justify-between transition-colors cursor-pointer"
+                >
+                  <span>{label}</span>
+                  <ArrowUpRight className="w-3 h-3" />
+                </button>
+              ))}
+            </div>
+          </div>
+        </aside>
+
+        {/* Main Content Viewport */}
+        <div className="lg:col-span-9 space-y-6">
+          {/* ================= OVERVIEW TAB ================= */}
+          {activeTab === 'overview' && (
+            <>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="bg-white border border-neutral-200 p-5">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-[#6b6b70]">
+                    Total Fleet Parcels
+                  </span>
+                  <div className="font-display text-3xl text-[#1d1d1f] mt-1 tabular-nums">
+                    {shipments.length}
+                  </div>
+                  <p className="text-xs text-[#008a39] font-bold mt-1">
+                    {metrics.inTransitCount} active · {metrics.deliveredCount} delivered
+                  </p>
+                </div>
+
+                <div className="bg-white border border-neutral-200 p-5">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-[#6b6b70]">
+                    Collected Revenue
+                  </span>
+                  <div className="font-display text-3xl text-[#1d1d1f] mt-1 tabular-nums">
+                    £{metrics.totalRevenue.toFixed(2)}
+                  </div>
+                  <p className="text-xs text-[#6b6b70] mt-1 tabular-nums">
+                    £{metrics.pendingBalance.toFixed(2)} balance outstanding
+                  </p>
+                </div>
+
+                <div className="bg-white border border-neutral-200 p-5">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-[#6b6b70]">
+                    Unread Push Alerts
+                  </span>
+                  <div className="font-display text-3xl text-[#FF5A1F] mt-1 tabular-nums">
+                    {metrics.unreadAlerts}
+                  </div>
+                  <p className="text-xs text-[#6b6b70] mt-1">
+                    {metrics.deviationsCount} corridor deviation(s)
+                  </p>
+                </div>
+
+                <div className="bg-white border border-neutral-200 p-5">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-[#6b6b70]">
+                    Support & Sync
+                  </span>
+                  <div className="font-display text-3xl text-[#1B6CFF] mt-1 tabular-nums">
+                    {metrics.openInbox + returnRequests.length}
+                  </div>
+                  <p className="text-xs text-[#6b6b70] mt-1">
+                    {metrics.openInbox} open msgs · {offlineQueue.length} offline queued
+                  </p>
+                </div>
+              </div>
+
+              {/* Live Fleet Snapshot Map + Quick Dispatch Actions */}
+              {activeShipment && (
+                <div className="bg-white border border-neutral-200 p-5 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <h2 className="font-extrabold text-base text-[#1d1d1f]">
+                        Active Fleet Telemetry · {activeShipment.tracking_no}
+                      </h2>
+                      <p className="text-xs text-[#6b6b70]">
+                        {activeShipment.origin.city} → {activeShipment.dest.city} · Courier{' '}
+                        {activeShipment.courier.name}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {shipments.slice(0, 4).map((s) => (
+                        <button
+                          key={s.tracking_no}
+                          type="button"
+                          onClick={() => onSelectTracking(s.tracking_no)}
+                          className={`px-2.5 py-1 text-xs font-mono-tabular font-bold border cursor-pointer ${
+                            s.tracking_no === activeShipment.tracking_no
+                              ? 'bg-[#FFCC00] border-[#1d1d1f]'
+                              : 'bg-[#f2f2f2] border-neutral-200'
+                          }`}
+                        >
+                          {s.tracking_no}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <MapViewport
+                    shipment={activeShipment}
+                    isOnline={isOnline}
+                    quotaExceeded={quotaExceeded}
+                    showGeofences={true}
+                    heightClass="h-[290px]"
+                  />
+                </div>
+              )}
+
+              {/* Compact Fleet Overview Grid */}
+              <div className="bg-white border border-neutral-200 overflow-x-auto">
+                <div className="px-5 py-4 border-b border-neutral-200 flex items-center justify-between">
+                  <h2 className="font-extrabold text-base text-[#1d1d1f]">Recent Fleet Shipments</h2>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('shipments')}
+                    className="text-xs font-extrabold text-[#1B6CFF] hover:underline cursor-pointer"
+                  >
+                    Manage all shipments →
+                  </button>
+                </div>
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="bg-[#f2f2f2] text-[#6b6b70] border-b border-neutral-200">
+                      <th className="py-2.5 px-4">Tracking No</th>
+                      <th className="py-2.5 px-4">Route</th>
+                      <th className="py-2.5 px-4">Status</th>
+                      <th className="py-2.5 px-4 text-right">Progress</th>
+                      <th className="py-2.5 px-4 text-right">Total</th>
+                      <th className="py-2.5 px-4 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-200">
+                    {shipments.slice(0, 6).map((s) => (
+                      <tr key={s.tracking_no} className="hover:bg-[#FFF6CC]/40">
+                        <td className="py-2.5 px-4 font-mono-tabular font-bold">{s.tracking_no}</td>
+                        <td className="py-2.5 px-4">
+                          {s.origin.city.split(',')[0]} → {s.dest.city.split(',')[0]}
+                        </td>
+                        <td className="py-2.5 px-4 font-bold">{s.status}</td>
+                        <td className="py-2.5 px-4 text-right font-mono-tabular">{s.progress}%</td>
+                        <td className="py-2.5 px-4 text-right font-mono-tabular">{s.payment.total}</td>
+                        <td className="py-2.5 px-4 text-right space-x-2 whitespace-nowrap">
+                          <button
+                            type="button"
+                            onClick={() => openEditor(s)}
+                            className="font-bold text-[#1B6CFF] hover:underline cursor-pointer"
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onSelectTracking(s.tracking_no);
+                              onNavigate('track');
+                            }}
+                            className="font-bold text-[#1d1d1f] hover:underline cursor-pointer"
+                          >
+                            Map
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          {/* ================= SHIPMENTS CRUD TAB ================= */}
+          {activeTab === 'shipments' && (
+            <div className="bg-white border border-neutral-200 p-5 space-y-5">
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div className="relative flex-1 max-w-md">
+                  <Search className="w-4 h-4 text-[#6b6b70] absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search tracking, receipt, city, courier or receiver..."
+                    className="w-full border border-neutral-300 pl-9 pr-3 py-2 text-xs focus:outline-none focus:border-[#1d1d1f]"
+                  />
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {['All', 'In Transit', 'Arrived at Hub', 'Delivered', 'Route Deviation'].map(
+                    (st) => (
+                      <button
+                        key={st}
+                        type="button"
+                        onClick={() => setStatusFilter(st)}
+                        className={`px-2.5 py-1.5 text-[11px] font-bold border cursor-pointer ${
+                          statusFilter === st
+                            ? 'bg-[#1d1d1f] text-[#FFCC00] border-[#1d1d1f]'
+                            : 'bg-[#f2f2f2] text-[#1d1d1f] border-neutral-200'
+                        }`}
+                      >
+                        {st}
+                      </button>
+                    )
+                  )}
+                </div>
+              </div>
+
+              {filteredShipments.length === 0 ? (
+                <div className="p-10 text-center border border-dashed border-neutral-300 space-y-3">
+                  <p className="text-sm font-bold text-[#1d1d1f]">No shipments match your filter.</p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSearchQuery('');
+                      setStatusFilter('All');
+                    }}
+                    className="px-4 py-2 bg-[#FFCC00] text-[#1d1d1f] text-xs font-extrabold cursor-pointer"
+                  >
+                    Clear Filters
+                  </button>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-xs">
+                    <thead>
+                      <tr className="bg-[#f2f2f2] text-[#6b6b70] border-b border-neutral-200">
+                        <th className="py-2.5 px-3">Tracking / Receipt</th>
+                        <th className="py-2.5 px-3">Corridor</th>
+                        <th className="py-2.5 px-3">Courier</th>
+                        <th className="py-2.5 px-3">Status</th>
+                        <th className="py-2.5 px-3 text-right">Progress</th>
+                        <th className="py-2.5 px-3 text-right">Payment</th>
+                        <th className="py-2.5 px-3 text-right">Controls</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-200">
+                      {filteredShipments.map((s) => (
+                        <tr key={s.tracking_no} className="hover:bg-[#FFF6CC]/40">
+                          <td className="py-2.5 px-3">
+                            <span className="font-mono-tabular font-bold block text-[#1d1d1f]">
+                              {s.tracking_no}
+                            </span>
+                            <span className="font-mono-tabular text-[10px] text-[#6b6b70]">
+                              {s.receipt_no}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <span className="font-bold block">
+                              {s.origin.city.split(',')[0]} → {s.dest.city.split(',')[0]}
+                            </span>
+                            <span className="text-[11px] text-[#6b6b70]">{s.receiver.name}</span>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <span className="block font-medium">{s.courier.name}</span>
+                            <span className="text-[10px] text-[#6b6b70]">{s.courier.vehicle}</span>
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <span
+                              className={`inline-block px-2 py-0.5 text-[11px] font-bold ${
+                                s.status === 'Delivered'
+                                  ? 'bg-emerald-100 text-emerald-900'
+                                  : s.status === 'Route Deviation'
+                                  ? 'bg-red-100 text-red-900'
+                                  : 'bg-[#FFF6CC] text-[#1d1d1f]'
+                              }`}
+                            >
+                              {s.status}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono-tabular font-bold">
+                            {s.progress}%
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono-tabular">
+                            <span className="font-bold block">{s.payment.total}</span>
+                            <span className="text-[10px] text-[#6b6b70]">{s.payment.state}</span>
+                          </td>
+                          <td className="py-2.5 px-3 text-right whitespace-nowrap space-x-1.5">
+                            <button
+                              type="button"
+                              onClick={() => openEditor(s)}
+                              aria-label={`Edit ${s.tracking_no}`}
+                              className="p-1.5 bg-[#f2f2f2] hover:bg-[#FFCC00] inline-flex cursor-pointer"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onSelectTracking(s.tracking_no);
+                                onNavigate('track');
+                              }}
+                              aria-label={`Live Track ${s.tracking_no}`}
+                              className="p-1.5 bg-[#f2f2f2] hover:bg-[#1B6CFF] hover:text-white inline-flex cursor-pointer"
+                            >
+                              <Navigation className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onSelectTracking(s.tracking_no);
+                                setPreviewReceiptShipment(s);
+                              }}
+                              aria-label={`Receipt ${s.tracking_no}`}
+                              className="p-1.5 bg-[#f2f2f2] hover:bg-[#1d1d1f] hover:text-[#FFCC00] inline-flex cursor-pointer"
+                            >
+                              <QrCode className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteShipment(s.tracking_no)}
+                              aria-label={`Delete ${s.tracking_no}`}
+                              className="p-1.5 bg-red-50 text-red-700 hover:bg-red-600 hover:text-white inline-flex cursor-pointer"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ================= LIVE GPS & GEOFENCES TAB ================= */}
+          {activeTab === 'gps' && activeShipment && (
+            <div className="space-y-6">
+              <div className="bg-white border border-neutral-200 p-5 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <h2 className="font-extrabold text-base text-[#1d1d1f]">
+                    GPS Telemetry & Geofence Dispatcher
+                  </h2>
+                  <div className="flex flex-wrap gap-1.5">
+                    {shipments.map((s) => (
+                      <button
+                        key={s.tracking_no}
+                        type="button"
+                        onClick={() => onSelectTracking(s.tracking_no)}
+                        className={`px-2.5 py-1 text-xs font-mono-tabular font-bold border cursor-pointer ${
+                          s.tracking_no === activeShipment.tracking_no
+                            ? 'bg-[#FFCC00] border-[#1d1d1f]'
+                            : 'bg-[#f2f2f2] border-neutral-200'
+                        }`}
+                      >
+                        {s.tracking_no}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <MapViewport
+                  shipment={activeShipment}
+                  isOnline={isOnline}
+                  quotaExceeded={quotaExceeded}
+                  showGeofences={true}
+                  heightClass="h-[340px]"
+                />
+
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    await onUpdatePosition(
+                      activeShipment.tracking_no,
+                      {
+                        lat: Number(gpsForm.lat),
+                        lng: Number(gpsForm.lng),
+                        location: gpsForm.location,
+                        speedKmh: Number(gpsForm.speedKmh) || 0,
+                        headingDeg: Number(gpsForm.headingDeg) || 0,
+                      },
+                      12000
+                    );
+                    showToast(`GPS ping pushed for ${activeShipment.tracking_no}`);
+                  }}
+                  className="grid sm:grid-cols-6 gap-3 pt-2 items-end"
+                >
+                  <div>
+                    <label className="block text-[11px] font-bold mb-1">Latitude</label>
+                    <input
+                      type="number"
+                      step="0.0001"
+                      value={gpsForm.lat}
+                      onChange={(e) => setGpsForm((f) => ({ ...f, lat: e.target.value }))}
+                      className="w-full border border-neutral-300 px-2.5 py-2 text-xs font-mono-tabular"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold mb-1">Longitude</label>
+                    <input
+                      type="number"
+                      step="0.0001"
+                      value={gpsForm.lng}
+                      onChange={(e) => setGpsForm((f) => ({ ...f, lng: e.target.value }))}
+                      className="w-full border border-neutral-300 px-2.5 py-2 text-xs font-mono-tabular"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="block text-[11px] font-bold mb-1">Location Sector</label>
+                    <input
+                      type="text"
+                      value={gpsForm.location}
+                      onChange={(e) => setGpsForm((f) => ({ ...f, location: e.target.value }))}
+                      className="w-full border border-neutral-300 px-2.5 py-2 text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold mb-1">Speed (km/h)</label>
+                    <input
+                      type="number"
+                      value={gpsForm.speedKmh}
+                      onChange={(e) => setGpsForm((f) => ({ ...f, speedKmh: e.target.value }))}
+                      className="w-full border border-neutral-300 px-2.5 py-2 text-xs font-mono-tabular"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    className="px-4 py-2 bg-[#1d1d1f] text-[#FFCC00] text-xs font-extrabold hover:bg-black cursor-pointer"
+                  >
+                    Push GPS Ping
+                  </button>
+                </form>
+              </div>
+
+              {/* Geofence Zones Manager */}
+              <div className="bg-white border border-neutral-200 p-5 space-y-4">
+                <h3 className="font-extrabold text-sm text-[#1d1d1f]">
+                  Armed Geofences ({activeShipment.geofences.length})
+                </h3>
+
+                <div className="divide-y divide-neutral-200 border border-neutral-200">
+                  {activeShipment.geofences.map((gf) => (
+                    <div
+                      key={gf.id}
+                      className="px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs"
+                    >
+                      <div>
+                        <span className="font-bold text-[#1d1d1f]">{gf.name}</span>
+                        <span className="block font-mono-tabular text-[11px] text-[#6b6b70]">
+                          {gf.lat.toFixed(4)}, {gf.lng.toFixed(4)} · Radius{' '}
+                          {(gf.radiusMeters / 1000).toFixed(1)} km · Type: {gf.type}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const next = activeShipment.geofences.map((g) =>
+                              g.id === gf.id ? { ...g, active: !g.active } : g
+                            );
+                            onUpdateGeofences(activeShipment.tracking_no, next);
+                          }}
+                          className={`px-2.5 py-1 font-bold cursor-pointer ${
+                            gf.active
+                              ? 'bg-emerald-100 text-emerald-900'
+                              : 'bg-neutral-200 text-neutral-700'
+                          }`}
+                        >
+                          {gf.active ? 'Armed' : 'Paused'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const next = activeShipment.geofences.map((g) =>
+                              g.id === gf.id ? { ...g, triggered: false } : g
+                            );
+                            onUpdateGeofences(activeShipment.tracking_no, next);
+                          }}
+                          className="px-2.5 py-1 bg-[#f2f2f2] font-bold cursor-pointer"
+                        >
+                          Reset Trigger
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const next = activeShipment.geofences.filter((g) => g.id !== gf.id);
+                            onUpdateGeofences(activeShipment.tracking_no, next);
+                          }}
+                          className="p-1.5 text-red-700 hover:bg-red-50 cursor-pointer"
+                          aria-label={`Remove geofence ${gf.name}`}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <form
+                  onSubmit={async (e) => {
+                    e.preventDefault();
+                    const zone: GeofenceZone = {
+                      id: `gf-adm-${Date.now()}`,
+                      name: newGfForm.name.trim() || 'Custom Zone',
+                      lat: Number(newGfForm.lat) || activeShipment.current.lat,
+                      lng: Number(newGfForm.lng) || activeShipment.current.lng,
+                      radiusMeters: Math.max(500, (Number(newGfForm.radiusKm) || 5) * 1000),
+                      type: newGfForm.type,
+                      active: true,
+                      triggered: false,
+                    };
+                    await onUpdateGeofences(activeShipment.tracking_no, [
+                      ...activeShipment.geofences,
+                      zone,
+                    ]);
+                    showToast(`Geofence "${zone.name}" added`);
+                  }}
+                  className="grid sm:grid-cols-6 gap-3 pt-2 items-end"
+                >
+                  <div className="sm:col-span-2">
+                    <label className="block text-[11px] font-bold mb-1">Zone Name</label>
+                    <input
+                      type="text"
+                      value={newGfForm.name}
+                      onChange={(e) => setNewGfForm((f) => ({ ...f, name: e.target.value }))}
+                      className="w-full border border-neutral-300 px-2.5 py-2 text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold mb-1">Lat</label>
+                    <input
+                      type="number"
+                      step="0.0001"
+                      value={newGfForm.lat}
+                      onChange={(e) => setNewGfForm((f) => ({ ...f, lat: e.target.value }))}
+                      className="w-full border border-neutral-300 px-2.5 py-2 text-xs font-mono-tabular"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold mb-1">Lng</label>
+                    <input
+                      type="number"
+                      step="0.0001"
+                      value={newGfForm.lng}
+                      onChange={(e) => setNewGfForm((f) => ({ ...f, lng: e.target.value }))}
+                      className="w-full border border-neutral-300 px-2.5 py-2 text-xs font-mono-tabular"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold mb-1">Radius (km)</label>
+                    <input
+                      type="number"
+                      min="1"
+                      value={newGfForm.radiusKm}
+                      onChange={(e) => setNewGfForm((f) => ({ ...f, radiusKm: e.target.value }))}
+                      className="w-full border border-neutral-300 px-2.5 py-2 text-xs font-mono-tabular"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    className="px-4 py-2 bg-[#FFCC00] border border-[#1d1d1f] text-[#1d1d1f] text-xs font-extrabold cursor-pointer"
+                  >
+                    + Add Zone
+                  </button>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* ================= PUSH ALERTS & BROADCASTS TAB ================= */}
+          {activeTab === 'alerts' && (
+            <div className="grid lg:grid-cols-12 gap-6 items-start">
+              <form
+                onSubmit={handleBroadcastAlert}
+                className="lg:col-span-5 bg-white border border-neutral-200 p-5 space-y-4"
+              >
+                <h2 className="font-extrabold text-base text-[#1d1d1f]">
+                  Dispatch Push Notification
+                </h2>
+                <div>
+                  <label className="block text-xs font-bold mb-1">Target Shipment</label>
+                  <select
+                    value={broadcastForm.trackingNo}
+                    onChange={(e) =>
+                      setBroadcastForm((f) => ({ ...f, trackingNo: e.target.value }))
+                    }
+                    className="w-full border border-neutral-300 px-3 py-2 text-xs font-mono-tabular"
+                  >
+                    {shipments.map((s) => (
+                      <option key={s.tracking_no} value={s.tracking_no}>
+                        {s.tracking_no} ({s.origin.city.split(',')[0]} → {s.dest.city.split(',')[0]})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold mb-1">Alert Category</label>
+                  <select
+                    value={broadcastForm.type}
+                    onChange={(e) =>
+                      setBroadcastForm((f) => ({
+                        ...f,
+                        type: e.target.value as PushAlert['type'],
+                      }))
+                    }
+                    className="w-full border border-neutral-300 px-3 py-2 text-xs"
+                  >
+                    <option value="route_update">Route Update</option>
+                    <option value="arrival">Driver Arrival</option>
+                    <option value="geofence_enter">Geofence Entry</option>
+                    <option value="deviation">Route Deviation</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold mb-1">Notification Title</label>
+                  <input
+                    type="text"
+                    required
+                    value={broadcastForm.title}
+                    onChange={(e) => setBroadcastForm((f) => ({ ...f, title: e.target.value }))}
+                    className="w-full border border-neutral-300 px-3 py-2 text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold mb-1">Message</label>
+                  <textarea
+                    rows={3}
+                    required
+                    value={broadcastForm.message}
+                    onChange={(e) => setBroadcastForm((f) => ({ ...f, message: e.target.value }))}
+                    className="w-full border border-neutral-300 px-3 py-2 text-xs"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  className="w-full py-2.5 bg-[#1d1d1f] text-[#FFCC00] text-xs font-extrabold inline-flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <Send className="w-3.5 h-3.5" />
+                  <span>Broadcast Push Alert</span>
+                </button>
+              </form>
+
+              <div className="lg:col-span-7 bg-white border border-neutral-200 p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h2 className="font-extrabold text-base text-[#1d1d1f]">
+                    Fleet Alert History ({alerts.length})
+                  </h2>
+                  <button
+                    type="button"
+                    onClick={onMarkAllAlertsRead}
+                    className="text-xs font-bold text-[#1B6CFF] hover:underline cursor-pointer"
+                  >
+                    Mark all read
+                  </button>
+                </div>
+
+                <div className="divide-y divide-neutral-200 border border-neutral-200 max-h-[460px] overflow-y-auto">
+                  {alerts.map((al) => (
+                    <div key={al.id} className="p-3.5 flex items-start justify-between gap-3 text-xs">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono-tabular font-bold text-[#1B6CFF]">
+                            {al.trackingNo}
+                          </span>
+                          <span className="font-bold text-[#1d1d1f]">{al.title}</span>
+                          {!al.read && (
+                            <span className="px-1.5 py-0.5 bg-[#FF5A1F] text-white text-[10px] font-bold">
+                              NEW
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[#6b6b70] mt-1">{al.message}</p>
+                        <span className="text-[10px] font-mono-tabular text-neutral-400">
+                          {al.timestamp}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onSelectTracking(al.trackingNo);
+                          onNavigate('track');
+                        }}
+                        className="text-[11px] font-bold underline shrink-0 cursor-pointer"
+                      >
+                        Inspect
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ================= RECEIPTS & PAYMENTS TAB ================= */}
+          {activeTab === 'receipts' && (
+            <div className="bg-white border border-neutral-200 p-5 space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h2 className="font-extrabold text-base text-[#1d1d1f]">
+                    Stamped Digital Receipts & Payments Ledger
+                  </h2>
+                  <p className="text-xs text-[#6b6b70]">
+                    Update payment stamps in real time or open printable QR receipts.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setCreateOpen(true)}
+                  className="px-4 py-2 bg-[#FFCC00] text-[#1d1d1f] border border-[#1d1d1f] text-xs font-extrabold cursor-pointer"
+                >
+                  + New Dispatch Shipment
+                </button>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead>
+                    <tr className="bg-[#f2f2f2] text-[#6b6b70] border-b border-neutral-200">
+                      <th className="py-2.5 px-3">Receipt Ref</th>
+                      <th className="py-2.5 px-3">Tracking</th>
+                      <th className="py-2.5 px-3">Method</th>
+                      <th className="py-2.5 px-3 text-right">Total</th>
+                      <th className="py-2.5 px-3 text-right">Paid</th>
+                      <th className="py-2.5 px-3 text-right">Balance</th>
+                      <th className="py-2.5 px-3">Stamp State</th>
+                      <th className="py-2.5 px-3 text-right">Receipt</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-neutral-200">
+                    {shipments.map((s) => (
+                      <tr key={s.tracking_no} className="hover:bg-[#FFF6CC]/40">
+                        <td className="py-2.5 px-3 font-mono-tabular font-bold">{s.receipt_no}</td>
+                        <td className="py-2.5 px-3 font-mono-tabular">{s.tracking_no}</td>
+                        <td className="py-2.5 px-3 text-[#6b6b70]">{s.payment.method}</td>
+                        <td className="py-2.5 px-3 text-right font-mono-tabular font-bold">
+                          {s.payment.total}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono-tabular text-[#008a39]">
+                          {s.payment.paid}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono-tabular text-[#FF5A1F]">
+                          {s.payment.balance}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <select
+                            aria-label={`Payment state for ${s.tracking_no}`}
+                            value={s.payment.state}
+                            onChange={(e) =>
+                              handleQuickPaymentStamp(
+                                s.tracking_no,
+                                e.target.value as Shipment['payment']['state']
+                              )
+                            }
+                            className="border border-neutral-300 px-2 py-1 text-[11px] font-bold bg-white"
+                          >
+                            {PAYMENT_STATES.map((st) => (
+                              <option key={st} value={st}>
+                                {st}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="py-2.5 px-3 text-right">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onSelectTracking(s.tracking_no);
+                              setPreviewReceiptShipment(s);
+                            }}
+                            className="px-2.5 py-1 bg-[#1d1d1f] text-[#FFCC00] text-[11px] font-bold cursor-pointer"
+                          >
+                            View QR
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* ================= ANALYTICS & ROUTE PLAYBACK TAB ================= */}
+          {activeTab === 'analytics' && (
+            <div className="space-y-6">
+              <div className="bg-white border border-neutral-200 p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <h2 className="font-extrabold text-base text-[#1d1d1f]">
+                    Fleet SLA & Historical Route Playback
+                  </h2>
+                  <p className="text-xs text-[#6b6b70]">
+                    Monitor daily parcel dispatch volume, geofence compliance, or launch the full waypoint scrubber.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('analytics')}
+                  className="px-4 py-2.5 bg-[#1d1d1f] text-[#FFCC00] text-xs font-extrabold shrink-0 cursor-pointer"
+                >
+                  Open Full Playback Studio →
+                </button>
+              </div>
+
+              <div className="bg-white border border-neutral-200 p-6">
+                <div className="flex items-center justify-between mb-5">
+                  <h3 className="font-extrabold text-sm text-[#1d1d1f]">
+                    Weekly Parcel Volume & On-Time SLA
+                  </h3>
+                  <span className="font-mono-tabular text-xs font-bold text-[#008a39]">
+                    Avg 99.4% SLA
+                  </span>
+                </div>
+                <div className="h-48 flex items-end justify-between gap-3 border-b border-neutral-200 pb-2">
+                  {ANALYTICS_DAILY_VOLUME.map((d) => {
+                    const heightPct = Math.round((d.parcels / 560) * 100);
+                    return (
+                      <div key={d.day} className="flex-1 flex flex-col items-center h-full justify-end">
+                        <span className="text-[11px] font-mono-tabular font-bold mb-1">
+                          {d.parcels}
+                        </span>
+                        <div
+                          className="w-full max-w-[44px] bg-[#1d1d1f] hover:bg-[#FFCC00] transition-colors"
+                          style={{ height: `${heightPct}%` }}
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="flex justify-between gap-3 pt-2 text-xs font-bold text-[#6b6b70]">
+                  {ANALYTICS_DAILY_VOLUME.map((d) => (
+                    <div key={d.day} className="flex-1 text-center">
+                      <span>{d.day}</span>
+                      <span className="block text-[10px] font-mono-tabular text-neutral-400">
+                        {d.onTimePct}% · {d.deviations} dev
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ================= INBOX, RETURNS & CONTENT TAB ================= */}
+          {activeTab === 'inbox' && (
+            <div className="space-y-6">
+              {/* Contact Messages Inbox */}
+              <div className="bg-white border border-neutral-200 p-5 space-y-4">
+                <h2 className="font-extrabold text-base text-[#1d1d1f]">
+                  Customer Support Inbox ({contactMessages.length})
+                </h2>
+
+                {contactMessages.length === 0 ? (
+                  <p className="text-xs text-[#6b6b70]">No customer messages submitted yet.</p>
+                ) : (
+                  <div className="divide-y divide-neutral-200 border border-neutral-200">
+                    {contactMessages.map((msg) => (
+                      <div key={msg.id} className="p-4 space-y-2.5 text-xs">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <span className="font-extrabold text-[#1d1d1f]">{msg.subject}</span>
+                            <span className="block text-[#6b6b70]">
+                              From {msg.name} ({msg.email})
+                            </span>
+                          </div>
+                          <span
+                            className={`px-2 py-0.5 text-[10px] font-bold uppercase ${
+                              msg.status === 'resolved'
+                                ? 'bg-emerald-100 text-emerald-900'
+                                : 'bg-[#FFE68A] text-[#1d1d1f]'
+                            }`}
+                          >
+                            {msg.status}
+                          </span>
+                        </div>
+                        <p className="text-[#1d1d1f] bg-[#f2f2f2] p-3">{msg.message}</p>
+                        <div className="flex flex-col sm:flex-row gap-2">
+                          <input
+                            type="text"
+                            placeholder="Add resolution note..."
+                            value={noteDrafts[msg.id] ?? msg.adminNote ?? ''}
+                            onChange={(e) =>
+                              setNoteDrafts((d) => ({ ...d, [msg.id]: e.target.value }))
+                            }
+                            className="flex-1 border border-neutral-300 px-3 py-1.5 text-xs"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleToggleContactStatus(msg)}
+                            className="px-4 py-1.5 bg-[#1d1d1f] text-[#FFCC00] font-bold cursor-pointer"
+                          >
+                            {msg.status === 'resolved' ? 'Reopen Ticket' : 'Mark Resolved'}
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Returns Queue */}
+              <div className="bg-white border border-neutral-200 p-5 space-y-4">
+                <h2 className="font-extrabold text-base text-[#1d1d1f]">
+                  Drop-Point Returns Queue ({returnRequests.length})
+                </h2>
+
+                <form onSubmit={handleIssueReturn} className="grid sm:grid-cols-4 gap-3 items-end">
+                  <div>
+                    <label className="block text-[11px] font-bold mb-1">Return Code</label>
+                    <input
+                      type="text"
+                      placeholder="Auto RET-UK-XXXX"
+                      value={newReturnForm.code}
+                      onChange={(e) => setNewReturnForm((r) => ({ ...r, code: e.target.value }))}
+                      className="w-full border border-neutral-300 px-2.5 py-2 text-xs font-mono-tabular"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold mb-1">Retailer</label>
+                    <input
+                      type="text"
+                      value={newReturnForm.retailer}
+                      onChange={(e) =>
+                        setNewReturnForm((r) => ({ ...r, retailer: e.target.value }))
+                      }
+                      className="w-full border border-neutral-300 px-2.5 py-2 text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold mb-1">Drop Point</label>
+                    <input
+                      type="text"
+                      value={newReturnForm.dropPoint}
+                      onChange={(e) =>
+                        setNewReturnForm((r) => ({ ...r, dropPoint: e.target.value }))
+                      }
+                      className="w-full border border-neutral-300 px-2.5 py-2 text-xs"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    className="px-4 py-2 bg-[#FFCC00] border border-[#1d1d1f] text-xs font-extrabold cursor-pointer"
+                  >
+                    + Issue Return Pass
+                  </button>
+                </form>
+
+                <div className="divide-y divide-neutral-200 border border-neutral-200">
+                  {returnRequests.map((ret) => (
+                    <div
+                      key={ret.id}
+                      className="px-4 py-3 flex flex-wrap items-center justify-between gap-3 text-xs"
+                    >
+                      <div>
+                        <span className="font-mono-tabular font-bold text-[#1d1d1f]">
+                          {ret.code}
+                        </span>
+                        <span className="ml-2 text-[#6b6b70]">
+                          {ret.retailer} · {ret.dropPoint}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleCycleReturnStatus(ret)}
+                        className="px-3 py-1 bg-[#1d1d1f] text-[#FFCC00] font-bold text-[11px] cursor-pointer"
+                      >
+                        {ret.status} (Advance)
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Help FAQs & Reviews Summary */}
+              <div className="grid md:grid-cols-2 gap-6">
+                <div className="bg-white border border-neutral-200 p-5 space-y-2">
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="font-extrabold text-sm">Published Help FAQs ({FAQ_ITEMS.length})</h3>
+                    <button
+                      type="button"
+                      onClick={() => onNavigate('help')}
+                      className="text-xs font-bold text-[#1B6CFF] hover:underline cursor-pointer"
+                    >
+                      View Help Page
+                    </button>
+                  </div>
+                  {FAQ_ITEMS.slice(0, 5).map((item) => (
+                    <div key={item.q} className="text-xs py-1.5 border-b border-neutral-100">
+                      <span className="font-bold block">{item.q}</span>
+                      <span className="text-[#6b6b70]">{item.category}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="bg-white border border-neutral-200 p-5 space-y-2">
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="font-extrabold text-sm">Verified Reviews ({REVIEWS.length})</h3>
+                    <button
+                      type="button"
+                      onClick={() => onNavigate('about')}
+                      className="text-xs font-bold text-[#1B6CFF] hover:underline cursor-pointer"
+                    >
+                      View About Page
+                    </button>
+                  </div>
+                  {REVIEWS.map((r) => (
+                    <div key={r.name} className="text-xs py-1.5 border-b border-neutral-100">
+                      <span className="font-bold">
+                        {r.name} ({r.city})
+                      </span>
+                      <p className="text-[#6b6b70] truncate">{r.quote}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ================= BUSINESS BULK CSV & OFFLINE SYNC TAB ================= */}
+          {activeTab === 'system' && (
+            <div className="space-y-6">
+              {/* Bulk CSV Importer */}
+              <div className="bg-white border border-neutral-200 p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="font-extrabold text-base text-[#1d1d1f] flex items-center gap-2">
+                      <FileSpreadsheet className="w-4 h-4" />
+                      <span>Business Bulk CSV Label Importer</span>
+                    </h2>
+                    <p className="text-xs text-[#6b6b70]">
+                      Format: TrackingNo, OriginCity, DestCity, ReceiverName, Service, WeightKg, TotalGBP
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('business')}
+                    className="text-xs font-bold text-[#1B6CFF] hover:underline cursor-pointer"
+                  >
+                    View Business Portal
+                  </button>
+                </div>
+
+                <textarea
+                  rows={4}
+                  value={csvText}
+                  onChange={(e) => setCsvText(e.target.value)}
+                  className="w-full border border-neutral-300 p-3 font-mono-tabular text-xs"
+                />
+                <button
+                  type="button"
+                  onClick={handleBulkCsvImport}
+                  className="px-5 py-2.5 bg-[#FFCC00] border border-[#1d1d1f] text-[#1d1d1f] text-xs font-extrabold cursor-pointer"
+                >
+                  Import CSV Batch into Live Fleet
+                </button>
+              </div>
+
+              {/* Offline Mode, Sync Queue, Push Permissions & Demo Reset */}
+              <div className="bg-white border border-neutral-200 p-5 space-y-4">
+                <h2 className="font-extrabold text-base text-[#1d1d1f]">
+                  PWA Offline Mode, Push Permissions & System Controls
+                </h2>
+
+                <div className="grid sm:grid-cols-3 gap-4 text-xs">
+                  <div className="p-4 bg-[#f2f2f2] border border-neutral-200 space-y-2">
+                    <div className="flex items-center gap-2 font-bold">
+                      {isOnline ? (
+                        <Wifi className="w-4 h-4 text-[#008a39]" />
+                      ) : (
+                        <WifiOff className="w-4 h-4 text-[#FF5A1F]" />
+                      )}
+                      <span>{isOnline ? 'Network Online' : 'Offline Mode Active'}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={onToggleSimulatedOffline}
+                      className="w-full py-2 bg-[#1d1d1f] text-[#FFCC00] font-bold cursor-pointer"
+                    >
+                      {simulatedOffline ? 'Disable Offline Test' : 'Test Offline Mode'}
+                    </button>
+                  </div>
+
+                  <div className="p-4 bg-[#f2f2f2] border border-neutral-200 space-y-2">
+                    <div className="flex items-center gap-2 font-bold">
+                      <RefreshCw className="w-4 h-4 text-[#1B6CFF]" />
+                      <span>Offline Queue ({offlineQueue.length})</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={onSyncNow}
+                      disabled={!isOnline || offlineQueue.length === 0}
+                      className="w-full py-2 bg-[#1B6CFF] text-white font-bold disabled:opacity-40 cursor-pointer"
+                    >
+                      Force Sync Queue
+                    </button>
+                  </div>
+
+                  <div className="p-4 bg-[#f2f2f2] border border-neutral-200 space-y-2">
+                    <div className="flex items-center gap-2 font-bold">
+                      <BellRing className="w-4 h-4 text-[#1d1d1f]" />
+                      <span>Browser Push: {notificationPermission}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={onRequestNotifications}
+                      className="w-full py-2 bg-[#FFCC00] text-[#1d1d1f] border border-[#1d1d1f] font-bold cursor-pointer"
+                    >
+                      Enable Push Alerts
+                    </button>
+                  </div>
+                </div>
+
+                <div className="pt-3 border-t border-neutral-200 flex flex-wrap items-center justify-between gap-3">
+                  <span className="text-xs text-[#6b6b70]">
+                    Reset server fleet & alert state back to the initial Golden Courier seed data.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={handleResetDemo}
+                    className="inline-flex items-center gap-2 px-4 py-2 border border-red-300 text-red-700 hover:bg-red-600 hover:text-white text-xs font-bold cursor-pointer"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Reset Demo Fleet</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ================= CREATE SHIPMENT MODAL ================= */}
+      {createOpen && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <form
+            onSubmit={handleCreateShipment}
+            className="bg-white border-2 border-[#1d1d1f] shadow-[8px_8px_0_#1d1d1f] w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6 space-y-4"
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-neutral-200">
+              <h2 className="font-display text-xl text-[#1d1d1f]">Dispatch New Shipment</h2>
+              <button
+                type="button"
+                onClick={() => setCreateOpen(false)}
+                className="p-1 cursor-pointer"
+                aria-label="Close modal"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="grid sm:grid-cols-2 gap-3 text-xs">
+              <div>
+                <label className="block font-bold mb-1">Tracking No (optional)</label>
+                <input
+                  type="text"
+                  placeholder="Auto e.g. TP26AD102938"
+                  value={newForm.trackingNo}
+                  onChange={(e) => setNewForm((f) => ({ ...f, trackingNo: e.target.value }))}
+                  className="w-full border border-neutral-300 px-3 py-2 font-mono-tabular"
+                />
+              </div>
+              <div>
+                <label className="block font-bold mb-1">Service Tier</label>
+                <select
+                  value={newForm.service}
+                  onChange={(e) =>
+                    setNewForm((f) => ({ ...f, service: e.target.value as Shipment['service'] }))
+                  }
+                  className="w-full border border-neutral-300 px-3 py-2"
+                >
+                  <option value="Economy">Economy</option>
+                  <option value="Standard">Standard</option>
+                  <option value="Express">Express</option>
+                  <option value="Same Day">Same Day</option>
+                </select>
+              </div>
+              <div>
+                <label className="block font-bold mb-1">Origin City *</label>
+                <input
+                  type="text"
+                  required
+                  value={newForm.originCity}
+                  onChange={(e) => setNewForm((f) => ({ ...f, originCity: e.target.value }))}
+                  className="w-full border border-neutral-300 px-3 py-2"
+                />
+              </div>
+              <div>
+                <label className="block font-bold mb-1">Destination City *</label>
+                <input
+                  type="text"
+                  required
+                  value={newForm.destCity}
+                  onChange={(e) => setNewForm((f) => ({ ...f, destCity: e.target.value }))}
+                  className="w-full border border-neutral-300 px-3 py-2"
+                />
+              </div>
+              <div>
+                <label className="block font-bold mb-1">Sender Name</label>
+                <input
+                  type="text"
+                  value={newForm.senderName}
+                  onChange={(e) => setNewForm((f) => ({ ...f, senderName: e.target.value }))}
+                  className="w-full border border-neutral-300 px-3 py-2"
+                />
+              </div>
+              <div>
+                <label className="block font-bold mb-1">Receiver Name</label>
+                <input
+                  type="text"
+                  value={newForm.receiverName}
+                  onChange={(e) => setNewForm((f) => ({ ...f, receiverName: e.target.value }))}
+                  className="w-full border border-neutral-300 px-3 py-2"
+                />
+              </div>
+              <div>
+                <label className="block font-bold mb-1">Courier Name</label>
+                <input
+                  type="text"
+                  value={newForm.courierName}
+                  onChange={(e) => setNewForm((f) => ({ ...f, courierName: e.target.value }))}
+                  className="w-full border border-neutral-300 px-3 py-2"
+                />
+              </div>
+              <div>
+                <label className="block font-bold mb-1">Vehicle ID</label>
+                <input
+                  type="text"
+                  value={newForm.courierVehicle}
+                  onChange={(e) => setNewForm((f) => ({ ...f, courierVehicle: e.target.value }))}
+                  className="w-full border border-neutral-300 px-3 py-2"
+                />
+              </div>
+              <div>
+                <label className="block font-bold mb-1">Package Contents</label>
+                <input
+                  type="text"
+                  value={newForm.packageDesc}
+                  onChange={(e) => setNewForm((f) => ({ ...f, packageDesc: e.target.value }))}
+                  className="w-full border border-neutral-300 px-3 py-2"
+                />
+              </div>
+              <div>
+                <label className="block font-bold mb-1">Total Fee (£)</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={newForm.totalFee}
+                  onChange={(e) => setNewForm((f) => ({ ...f, totalFee: e.target.value }))}
+                  className="w-full border border-neutral-300 px-3 py-2 font-mono-tabular"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setCreateOpen(false)}
+                className="px-4 py-2.5 border border-neutral-300 text-xs font-bold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-6 py-2.5 bg-[#1d1d1f] text-[#FFCC00] text-xs font-extrabold cursor-pointer"
+              >
+                Create & Arm Geofences
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ================= EDIT SHIPMENT MODAL ================= */}
+      {editingTrackingNo && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
+          <form
+            onSubmit={handleSaveEdit}
+            className="bg-white border-2 border-[#1d1d1f] shadow-[8px_8px_0_#1d1d1f] w-full max-w-xl max-h-[90vh] overflow-y-auto p-6 space-y-4"
+          >
+            <div className="flex items-center justify-between pb-3 border-b border-neutral-200">
+              <h2 className="font-display text-xl text-[#1d1d1f]">
+                Edit Shipment · <span className="font-mono-tabular">{editingTrackingNo}</span>
+              </h2>
+              <button
+                type="button"
+                onClick={() => setEditingTrackingNo(null)}
+                className="p-1 cursor-pointer"
+                aria-label="Close edit modal"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="grid sm:grid-cols-2 gap-3 text-xs">
+              <div>
+                <label className="block font-bold mb-1">Shipment Status</label>
+                <select
+                  value={editDraft.status}
+                  onChange={(e) => setEditDraft((d) => ({ ...d, status: e.target.value }))}
+                  className="w-full border border-neutral-300 px-3 py-2 font-bold"
+                >
+                  {STATUS_OPTIONS.map((opt) => (
+                    <option key={opt} value={opt}>
+                      {opt}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block font-bold mb-1">Progress ({editDraft.progress}%)</label>
+                <input
+                  type="range"
+                  min={0}
+                  max={100}
+                  value={editDraft.progress}
+                  onChange={(e) =>
+                    setEditDraft((d) => ({ ...d, progress: Number(e.target.value) }))
+                  }
+                  className="w-full accent-[#FFCC00] mt-2"
+                />
+              </div>
+              <div>
+                <label className="block font-bold mb-1">Current Location</label>
+                <input
+                  type="text"
+                  value={editDraft.currentLocation}
+                  onChange={(e) =>
+                    setEditDraft((d) => ({ ...d, currentLocation: e.target.value }))
+                  }
+                  className="w-full border border-neutral-300 px-3 py-2"
+                />
+              </div>
+              <div>
+                <label className="block font-bold mb-1">ETA</label>
+                <input
+                  type="text"
+                  value={editDraft.eta}
+                  onChange={(e) => setEditDraft((d) => ({ ...d, eta: e.target.value }))}
+                  className="w-full border border-neutral-300 px-3 py-2"
+                />
+              </div>
+              <div>
+                <label className="block font-bold mb-1">Courier Name</label>
+                <input
+                  type="text"
+                  value={editDraft.courierName}
+                  onChange={(e) => setEditDraft((d) => ({ ...d, courierName: e.target.value }))}
+                  className="w-full border border-neutral-300 px-3 py-2"
+                />
+              </div>
+              <div>
+                <label className="block font-bold mb-1">Payment Stamp</label>
+                <select
+                  value={editDraft.paymentState}
+                  onChange={(e) =>
+                    setEditDraft((d) => ({
+                      ...d,
+                      paymentState: e.target.value as Shipment['payment']['state'],
+                    }))
+                  }
+                  className="w-full border border-neutral-300 px-3 py-2 font-bold"
+                >
+                  {PAYMENT_STATES.map((st) => (
+                    <option key={st} value={st}>
+                      {st}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="sm:col-span-2">
+                <label className="block font-bold mb-1">
+                  Optional Timeline Checkpoint Scan Note
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Cleared Birmingham regional sort belt"
+                  value={editDraft.scanNote}
+                  onChange={(e) => setEditDraft((d) => ({ ...d, scanNote: e.target.value }))}
+                  className="w-full border border-neutral-300 px-3 py-2"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setEditingTrackingNo(null)}
+                className="px-4 py-2.5 border border-neutral-300 text-xs font-bold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="px-6 py-2.5 bg-[#1d1d1f] text-[#FFCC00] text-xs font-extrabold cursor-pointer"
+              >
+                Save Changes & Broadcast
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* ================= ADMIN RECEIPT PREVIEW MODAL ================= */}
+      {previewReceiptShipment && (
+        <div
+          className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-[#f2f2f2] border-2 border-[#1d1d1f] shadow-[8px_8px_0_#1d1d1f] w-full max-w-2xl max-h-[90vh] overflow-y-auto p-4 sm:p-6 space-y-4">
+            <div className="flex items-center justify-between no-print">
+              <div>
+                <h2 className="font-display text-lg text-[#1d1d1f]">
+                  Admin Receipt Verification · {previewReceiptShipment.receipt_no}
+                </h2>
+                <p className="text-xs text-[#6b6b70]">
+                  Tracking {previewReceiptShipment.tracking_no} · {previewReceiptShipment.payment.state}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPreviewReceiptShipment(null)}
+                className="p-1.5 bg-white border border-neutral-300 cursor-pointer"
+                aria-label="Close receipt preview"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <StampedReceiptCard shipment={previewReceiptShipment} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
