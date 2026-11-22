@@ -1,15 +1,18 @@
 import React from 'react';
 import { Printer } from 'lucide-react';
-import type { Shipment } from '../types';
+import { DEFAULT_SITE_SETTINGS } from '../data/seedData';
+import type { Shipment, SiteSettings } from '../types';
 
 interface StampedReceiptCardProps {
   shipment: Shipment;
   showPrintButton?: boolean;
+  contactSettings?: SiteSettings['contact'];
 }
 
 export const StampedReceiptCard: React.FC<StampedReceiptCardProps> = ({
   shipment,
   showPrintButton = true,
+  contactSettings = DEFAULT_SITE_SETTINGS.contact,
 }) => {
   return (
     <div className="bg-white border-2 border-[#1d1d1f] p-6 sm:p-8 shadow-xl print-sheet relative overflow-hidden">
@@ -29,10 +32,10 @@ export const StampedReceiptCard: React.FC<StampedReceiptCardProps> = ({
         <div>
           <div className="font-extrabold text-xl text-[#1d1d1f]">Golden Courier</div>
           <p className="text-xs text-[#6b6b70] mt-1">
-            123 Demo Parcel Lane, Testford, London, ZZ99 9ZZ, United Kingdom
+            {contactSettings.address}
           </p>
           <p className="text-xs text-[#6b6b70] font-mono-tabular mt-0.5">
-            +1234567890 · support@goldencourier.demo · VAT: GB 284 5521 09
+            {contactSettings.phone} · {contactSettings.email} · VAT: GB 284 5521 09
           </p>
         </div>
         <div className="sm:text-right">

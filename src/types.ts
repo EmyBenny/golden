@@ -138,7 +138,7 @@ export interface PushAlert {
 
 export interface OfflineQueuedAction {
   id: string;
-  kind: 'contact' | 'gps_update' | 'geofence_update';
+  kind: 'contact' | 'gps_update' | 'geofence_update' | 'ticket_reply';
   payload: Record<string, unknown>;
   createdAt: string;
 }
@@ -161,6 +161,72 @@ export interface ContactMessage {
   createdAt: string;
   status: 'open' | 'resolved';
   adminNote?: string;
+}
+
+export interface SupportReply {
+  id: string;
+  senderRole: 'visitor' | 'admin';
+  senderName: string;
+  text: string;
+  createdAt: string;
+}
+
+export interface SupportTicket {
+  id: string;
+  ticketCode: string;
+  name: string;
+  email: string;
+  trackingNo?: string;
+  category: 'Tracking' | 'Delivery Issue' | 'Receipt & Billing' | 'Return' | 'General';
+  priority: 'Normal' | 'Urgent';
+  subject: string;
+  status: 'open' | 'in_progress' | 'resolved';
+  createdAt: string;
+  updatedAt: string;
+  replies: SupportReply[];
+}
+
+export interface FaqItem {
+  id: string;
+  category: string;
+  q: string;
+  a: string;
+}
+
+export interface AboutValue {
+  title: string;
+  desc: string;
+}
+
+export interface AboutMilestone {
+  year: string;
+  text: string;
+}
+
+export interface SiteSettings {
+  contact: {
+    address: string;
+    email: string;
+    phone: string;
+    supportHours: string;
+    salesHours: string;
+  };
+  about: {
+    eyebrow: string;
+    headline: string;
+    intro: string;
+    heroImage: string;
+    values: AboutValue[];
+    milestones: AboutMilestone[];
+  };
+  help: {
+    eyebrow: string;
+    headline: string;
+    searchPlaceholder: string;
+    stillStuckTitle: string;
+    stillStuckSubtitle: string;
+    faqs: FaqItem[];
+  };
 }
 
 export interface ReturnRequest {

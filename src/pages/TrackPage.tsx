@@ -15,7 +15,7 @@ import {
   Truck,
   X,
 } from 'lucide-react';
-import type { PushAlert, Shipment } from '../types';
+import type { PushAlert, Shipment, SiteSettings } from '../types';
 import { distanceMeters, distanceToPolylineMeters, formatDistance } from '../utils/geo';
 import { MapViewport } from '../components/MapViewport';
 import { StampedReceiptCard } from '../components/StampedReceiptCard';
@@ -30,6 +30,8 @@ interface TrackPageProps {
   alerts: PushAlert[];
   isOnline: boolean;
   quotaExceeded: boolean;
+  supportEmail?: string;
+  contactSettings?: SiteSettings['contact'];
 }
 
 export const TrackPage: React.FC<TrackPageProps> = ({
@@ -40,6 +42,8 @@ export const TrackPage: React.FC<TrackPageProps> = ({
   alerts,
   isOnline,
   quotaExceeded,
+  supportEmail = 'support@goldencourier.demo',
+  contactSettings,
 }) => {
   const [searchInput, setSearchInput] = useState(selectedTrackingNo);
   const [showGeofences, setShowGeofences] = useState(true);
@@ -631,7 +635,9 @@ export const TrackPage: React.FC<TrackPageProps> = ({
               )}
 
               {/* TAB 3: STAMPED DIGITAL RECEIPT FOR THIS TRACKED PARCEL */}
-              {detailTab === 'receipt' && <StampedReceiptCard shipment={shipment} />}
+              {detailTab === 'receipt' && (
+                <StampedReceiptCard shipment={shipment} contactSettings={contactSettings} />
+              )}
 
               {/* TAB 4: PARCEL RETURN DETAILS (READ-ONLY FOR TRACKED PARCEL) */}
               {detailTab === 'return' && (
@@ -662,7 +668,7 @@ export const TrackPage: React.FC<TrackPageProps> = ({
 
                   <p className="text-[#6b6b70] leading-relaxed">
                     Need a return authorization code for this delivery? Reach out via{' '}
-                    <strong>support@goldencourier.demo</strong> or contact the original merchant quoting tracking number{' '}
+                    <strong>{supportEmail}</strong> or contact the original merchant quoting tracking number{' '}
                     <strong className="font-mono-tabular text-[#1d1d1f]">
                       {shipment.tracking_no}
                     </strong>

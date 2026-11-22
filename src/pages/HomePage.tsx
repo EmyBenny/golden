@@ -11,12 +11,13 @@ import {
   Truck,
 } from 'lucide-react';
 import { FAQ_ITEMS, REVIEWS } from '../data/seedData';
-import type { PageRoute, Shipment } from '../types';
+import type { FaqItem, PageRoute, Shipment } from '../types';
 import { PWAInstallButton } from '../components/PWAInstallButton';
 import { HomeMediaShowcase } from '../components/HomeMediaShowcase';
 
 interface HomePageProps {
   shipments: Shipment[];
+  faqs?: FaqItem[];
   onNavigate: (page: PageRoute) => void;
   onTrackShipment: (trackingNo: string) => void;
 }
@@ -46,6 +47,7 @@ const HERO_SLIDES = [
 ];
 
 export const HomePage: React.FC<HomePageProps> = ({
+  faqs,
   onNavigate,
   onTrackShipment,
 }) => {
@@ -595,7 +597,7 @@ export const HomePage: React.FC<HomePageProps> = ({
             </button>
           </div>
           <div className="lg:col-span-7 divide-y divide-neutral-200">
-            {FAQ_ITEMS.slice(0, 4).map((item, idx) => (
+            {(faqs && faqs.length > 0 ? faqs : FAQ_ITEMS).slice(0, 4).map((item, idx) => (
               <div key={item.q} className="py-4 first:pt-0 last:pb-0">
                 <button
                   type="button"

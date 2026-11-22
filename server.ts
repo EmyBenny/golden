@@ -2,9 +2,23 @@ import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { SEED_ALERTS, SEED_SHIPMENTS } from './src/data/seedData.ts';
+import {
+  DEFAULT_SITE_SETTINGS,
+  SEED_ALERTS,
+  SEED_SHIPMENTS,
+  SEED_SUPPORT_TICKETS,
+} from './src/data/seedData.ts';
 import { distanceMeters, distanceToPolylineMeters } from './src/utils/geo.ts';
-import type { ContactMessage, GeofenceZone, PushAlert, ReturnRequest, Shipment } from './src/types.ts';
+import type {
+  ContactMessage,
+  GeofenceZone,
+  PushAlert,
+  ReturnRequest,
+  Shipment,
+  SiteSettings,
+  SupportReply,
+  SupportTicket,
+} from './src/types.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,9 +28,23 @@ const PORT = process.env.NODE_ENV === 'production' && process.env.PORT ? Number(
 
 app.use(express.json({ limit: '10mb' }));
 
+function isSafeMediaUrl(url: string): boolean {
+  const trimmed = url.trim();
+  if (!trimmed) return false;
+  if (trimmed.startsWith('/')) return true;
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 // In-memory state store synchronized with clients via REST + SSE
 let shipments: Shipment[] = structuredClone(SEED_SHIPMENTS);
 let alerts: PushAlert[] = structuredClone(SEED_ALERTS);
+let siteSettings: SiteSettings = structuredClone(DEFAULT_SITE_SETTINGS);
+let supportTickets: SupportTicket[] = structuredClone(SEED_SUPPORT_TICKETS);
 let contactMessages: ContactMessage[] = [
   {
     id: 'msg-1001',
@@ -235,8 +263,254 @@ app.put('/api/geofences/:trackingNo', (req, res) => {
   res.json({ ok: true, shipment: shipments[idx] });
 });
 
+app.get('/api/settings', (_req, res) => {
+  res.json({ ok: true, settings: siteSettings });
+});
+
+app.put('/api/admin/settings', (req, res) => {
+  const body = req.body ?? {};
+  const nextContact = body.contact ?? {};
+  const nextAbout = body.about ?? {};
+  const nextHelp = body.help ?? {};
+
+  const safeAddress = String(nextContact.address ?? siteSettings.contact.address).trim().slice(0, 300);
+  const safeEmail = String(nextContact.email ?? siteSettings.contact.email).trim().slice(0, 150);
+  const safePhone = String(nextContact.phone ?? siteSettings.contact.phone).trim().slice(0, 60);
+
+  if (!safeAddress || !safeEmail || !safePhone) {
+    res.status(400).json({ ok: false, error: 'Address, email, and phone contact are required' });
+    return;
+  }
+
+  const heroCandidate = String(nextAbout.heroImage ?? siteSettings.about.heroImage).trim();
+  const safeHeroImage = isSafeMediaUrl(heroCandidate)
+    ? heroCandidate
+    : siteSettings.about.heroImage;
+
+  const safeValues = Array.isArray(nextAbout.values)
+    ? nextAbout.values
+        .map((v: Record<string, unknown>) => ({
+          title: String(v?.title ?? '').trim().slice(0, 100),
+          desc: String(v?.desc ?? '').trim().slice(0, 400),
+        }))
+        .filter((v: { title: string; desc: string }) => v.title && v.desc)
+        .slice(0, 6)
+    : siteSettings.about.values;
+
+  const safeMilestones = Array.isArray(nextAbout.milestones)
+    ? nextAbout.milestones
+        .map((m: Record<string, unknown>) => ({
+          year: String(m?.year ?? '').trim().slice(0, 20),
+          text: String(m?.text ?? '').trim().slice(0, 250),
+        }))
+        .filter((m: { year: string; text: string }) => m.year && m.text)
+        .slice(0, 12)
+    : siteSettings.about.milestones;
+
+  const safeFaqs = Array.isArray(nextHelp.faqs)
+    ? nextHelp.faqs
+        .map((f: Record<string, unknown>, idx: number) => ({
+          id: String(f?.id ?? `faq-${Date.now()}-${idx}`).trim(),
+          category: String(f?.category ?? 'General').trim().slice(0, 60) || 'General',
+          q: String(f?.q ?? '').trim().slice(0, 240),
+          a: String(f?.a ?? '').trim().slice(0, 1000),
+        }))
+        .filter((f: { q: string; a: string }) => f.q && f.a)
+        .slice(0, 40)
+    : siteSettings.help.faqs;
+
+  siteSettings = {
+    contact: {
+      address: safeAddress,
+      email: safeEmail,
+      phone: safePhone,
+      supportHours: String(nextContact.supportHours ?? siteSettings.contact.supportHours).trim().slice(0, 120),
+      salesHours: String(nextContact.salesHours ?? siteSettings.contact.salesHours).trim().slice(0, 120),
+    },
+    about: {
+      eyebrow: String(nextAbout.eyebrow ?? siteSettings.about.eyebrow).trim().slice(0, 80),
+      headline: String(nextAbout.headline ?? siteSettings.about.headline).trim().slice(0, 160),
+      intro: String(nextAbout.intro ?? siteSettings.about.intro).trim().slice(0, 800),
+      heroImage: safeHeroImage,
+      values: safeValues.length > 0 ? safeValues : siteSettings.about.values,
+      milestones: safeMilestones.length > 0 ? safeMilestones : siteSettings.about.milestones,
+    },
+    help: {
+      eyebrow: String(nextHelp.eyebrow ?? siteSettings.help.eyebrow).trim().slice(0, 80),
+      headline: String(nextHelp.headline ?? siteSettings.help.headline).trim().slice(0, 160),
+      searchPlaceholder: String(nextHelp.searchPlaceholder ?? siteSettings.help.searchPlaceholder).trim().slice(0, 160),
+      stillStuckTitle: String(nextHelp.stillStuckTitle ?? siteSettings.help.stillStuckTitle).trim().slice(0, 120),
+      stillStuckSubtitle: String(nextHelp.stillStuckSubtitle ?? siteSettings.help.stillStuckSubtitle).trim().slice(0, 300),
+      faqs: safeFaqs.length > 0 ? safeFaqs : siteSettings.help.faqs,
+    },
+  };
+
+  broadcastSSE('settings_updated', { settings: siteSettings });
+  res.json({ ok: true, settings: siteSettings });
+});
+
+// ======================== REAL-TIME SUPPORT TICKETS API ========================
+
+const VALID_CATEGORIES = new Set(['Tracking', 'Delivery Issue', 'Receipt & Billing', 'Return', 'General']);
+
+function createSupportTicketRecord(input: {
+  name: string;
+  email: string;
+  subject?: string;
+  message: string;
+  trackingNo?: string;
+  category?: string;
+  priority?: string;
+}): SupportTicket {
+  const now = new Date().toISOString();
+  const codeNum = Math.floor(1000 + Math.random() * 8999);
+  const ticketCode = `TKT-${codeNum}`;
+  const safeCategory = VALID_CATEGORIES.has(String(input.category || ''))
+    ? (String(input.category) as SupportTicket['category'])
+    : 'General';
+  const safePriority: SupportTicket['priority'] =
+    input.priority === 'Urgent' ? 'Urgent' : 'Normal';
+  const cleanTracking = input.trackingNo ? String(input.trackingNo).trim().toUpperCase().slice(0, 40) : undefined;
+
+  return {
+    id: `tkt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    ticketCode,
+    name: String(input.name).trim().slice(0, 120),
+    email: String(input.email).trim().slice(0, 150),
+    trackingNo: cleanTracking || undefined,
+    category: safeCategory,
+    priority: safePriority,
+    subject: String(input.subject || 'Support Ticket').trim().slice(0, 200),
+    status: 'open',
+    createdAt: now,
+    updatedAt: now,
+    replies: [
+      {
+        id: `rep-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        senderRole: 'visitor',
+        senderName: String(input.name).trim().slice(0, 120),
+        text: String(input.message).trim().slice(0, 2000),
+        createdAt: now,
+      },
+    ],
+  };
+}
+
+// Visitor lookup of a specific ticket by ticketCode (preserves privacy of other visitors' tickets)
+app.get('/api/tickets/:code', (req, res) => {
+  const q = req.params.code.trim().toUpperCase();
+  const found = supportTickets.find(
+    (t) => t.ticketCode.toUpperCase() === q || t.id.toUpperCase() === q
+  );
+  if (!found) {
+    res.status(404).json({ ok: false, error: 'Ticket not found' });
+    return;
+  }
+  res.json({ ok: true, ticket: found });
+});
+
+app.post('/api/tickets', (req, res) => {
+  const { name, email, subject, message, trackingNo, category, priority } = req.body ?? {};
+  if (!name || !email || !message) {
+    res.status(400).json({ ok: false, error: 'Name, email, and message are required' });
+    return;
+  }
+  const ticket = createSupportTicketRecord({ name, email, subject, message, trackingNo, category, priority });
+  supportTickets = [ticket, ...supportTickets];
+
+  const legacyEntry: ContactMessage = {
+    id: `msg-${Date.now()}`,
+    name: ticket.name,
+    email: ticket.email,
+    subject: ticket.subject,
+    message: ticket.replies[0].text,
+    createdAt: ticket.createdAt,
+    status: 'open',
+  };
+  contactMessages = [legacyEntry, ...contactMessages];
+
+  broadcastSSE('ticket_created', { ticket });
+  broadcastSSE('admin_contact', { entry: legacyEntry });
+  res.status(201).json({ ok: true, ticket });
+});
+
+app.post('/api/tickets/:id/replies', (req, res) => {
+  const key = req.params.id.trim().toUpperCase();
+  const idx = supportTickets.findIndex(
+    (t) => t.id.toUpperCase() === key || t.ticketCode.toUpperCase() === key
+  );
+  if (idx === -1) {
+    res.status(404).json({ ok: false, error: 'Support ticket not found' });
+    return;
+  }
+  const { senderRole, senderName, text } = req.body ?? {};
+  const cleanText = String(text ?? '').trim().slice(0, 2000);
+  if (!cleanText) {
+    res.status(400).json({ ok: false, error: 'Reply message cannot be empty' });
+    return;
+  }
+  const role: SupportReply['senderRole'] = senderRole === 'admin' ? 'admin' : 'visitor';
+  const fallbackName = role === 'admin' ? 'Golden Courier Support' : supportTickets[idx].name;
+  const cleanName = String(senderName ?? fallbackName).trim().slice(0, 120) || fallbackName;
+  const now = new Date().toISOString();
+
+  const reply: SupportReply = {
+    id: `rep-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    senderRole: role,
+    senderName: cleanName,
+    text: cleanText,
+    createdAt: now,
+  };
+
+  const current = supportTickets[idx];
+  const nextStatus: SupportTicket['status'] =
+    role === 'admin'
+      ? current.status === 'resolved'
+        ? 'resolved'
+        : 'in_progress'
+      : current.status === 'resolved'
+      ? 'open'
+      : current.status;
+
+  const updatedTicket: SupportTicket = {
+    ...current,
+    status: nextStatus,
+    updatedAt: now,
+    replies: [...current.replies, reply],
+  };
+
+  supportTickets[idx] = updatedTicket;
+  broadcastSSE('ticket_reply', { ticket: updatedTicket, reply });
+  res.status(201).json({ ok: true, ticket: updatedTicket, reply });
+});
+
+app.get('/api/admin/tickets', (_req, res) => {
+  res.json({ ok: true, tickets: supportTickets });
+});
+
+app.patch('/api/admin/tickets/:id', (req, res) => {
+  const key = req.params.id.trim().toUpperCase();
+  const idx = supportTickets.findIndex(
+    (t) => t.id.toUpperCase() === key || t.ticketCode.toUpperCase() === key
+  );
+  if (idx === -1) {
+    res.status(404).json({ ok: false, error: 'Support ticket not found' });
+    return;
+  }
+  const { status } = req.body ?? {};
+  const nextStatus: SupportTicket['status'] =
+    status === 'resolved' ? 'resolved' : status === 'in_progress' ? 'in_progress' : 'open';
+  supportTickets[idx] = {
+    ...supportTickets[idx],
+    status: nextStatus,
+    updatedAt: new Date().toISOString(),
+  };
+  broadcastSSE('ticket_updated', { ticket: supportTickets[idx] });
+  res.json({ ok: true, ticket: supportTickets[idx] });
+});
+
 app.post('/api/contact', (req, res) => {
-  const { name, email, subject, message } = req.body ?? {};
+  const { name, email, subject, message, trackingNo, category, priority } = req.body ?? {};
   if (!name || !email || !message) {
     res.status(400).json({ ok: false, error: 'Name, email, and message are required' });
     return;
@@ -251,8 +525,13 @@ app.post('/api/contact', (req, res) => {
     status: 'open',
   };
   contactMessages = [entry, ...contactMessages];
+
+  const ticket = createSupportTicketRecord({ name, email, subject, message, trackingNo, category, priority });
+  supportTickets = [ticket, ...supportTickets];
+
   broadcastSSE('admin_contact', { entry });
-  res.status(201).json({ ok: true, entry });
+  broadcastSSE('ticket_created', { ticket });
+  res.status(201).json({ ok: true, entry, ticket });
 });
 
 app.post('/api/sync', (req, res) => {
@@ -261,7 +540,46 @@ app.post('/api/sync', (req, res) => {
     res.status(400).json({ ok: false, error: 'actions array required' });
     return;
   }
-  const processedIds = actions.map((a) => a.id);
+  const processedIds: string[] = [];
+  for (const act of actions) {
+    processedIds.push(act.id);
+    if (act.kind === 'contact' && act.payload) {
+      const p = act.payload;
+      if (p.name && p.email && p.message) {
+        const ticket = createSupportTicketRecord({
+          name: String(p.name),
+          email: String(p.email),
+          subject: p.subject ? String(p.subject) : undefined,
+          message: String(p.message),
+          trackingNo: p.trackingNo ? String(p.trackingNo) : undefined,
+          category: p.category ? String(p.category) : undefined,
+          priority: p.priority ? String(p.priority) : undefined,
+        });
+        supportTickets = [ticket, ...supportTickets];
+        broadcastSSE('ticket_created', { ticket });
+      }
+    } else if (act.kind === 'ticket_reply' && act.payload) {
+      const p = act.payload;
+      const tIdx = supportTickets.findIndex(
+        (t) => t.id === p.ticketId || t.ticketCode === p.ticketCode
+      );
+      if (tIdx !== -1 && p.text) {
+        const reply: SupportReply = {
+          id: `rep-sync-${Date.now()}`,
+          senderRole: p.senderRole === 'admin' ? 'admin' : 'visitor',
+          senderName: String(p.senderName || supportTickets[tIdx].name),
+          text: String(p.text),
+          createdAt: new Date().toISOString(),
+        };
+        supportTickets[tIdx] = {
+          ...supportTickets[tIdx],
+          updatedAt: reply.createdAt,
+          replies: [...supportTickets[tIdx].replies, reply],
+        };
+        broadcastSSE('ticket_reply', { ticket: supportTickets[tIdx], reply });
+      }
+    }
+  }
   res.json({ ok: true, syncedCount: processedIds.length, processedIds });
 });
 
@@ -273,7 +591,9 @@ app.get('/api/admin/overview', (_req, res) => {
     shipments,
     alerts,
     contactMessages,
+    supportTickets,
     returnRequests,
+    settings: siteSettings,
   });
 });
 
@@ -685,8 +1005,10 @@ app.patch('/api/admin/returns/:id', (req, res) => {
 app.post('/api/admin/reset', (_req, res) => {
   shipments = structuredClone(SEED_SHIPMENTS);
   alerts = structuredClone(SEED_ALERTS);
-  broadcastSSE('reset', { shipments, alerts });
-  res.json({ ok: true, shipments, alerts });
+  siteSettings = structuredClone(DEFAULT_SITE_SETTINGS);
+  supportTickets = structuredClone(SEED_SUPPORT_TICKETS);
+  broadcastSSE('reset', { shipments, alerts, settings: siteSettings, tickets: supportTickets });
+  res.json({ ok: true, shipments, alerts, settings: siteSettings, tickets: supportTickets });
 });
 
 async function startServer() {

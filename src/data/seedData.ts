@@ -1,4 +1,4 @@
-import type { PushAlert, Shipment } from '../types';
+import type { PushAlert, Shipment, SiteSettings, SupportTicket } from '../types';
 
 export const PROOF_PARCEL_IMG = '/src/assets/images/parcel_proof_boots_1795252245449.jpg';
 export const FLEET_VAN_IMG = '/src/assets/images/trackpro_fleet_van_1795252246008.jpg';
@@ -473,4 +473,109 @@ export const ANALYTICS_DAILY_VOLUME = [
   { day: 'Fri', parcels: 512, onTimePct: 99.4, deviations: 2 },
   { day: 'Sat', parcels: 292, onTimePct: 99.7, deviations: 0 },
   { day: 'Sun', parcels: 184, onTimePct: 99.4, deviations: 1 },
+];
+
+export const DEFAULT_SITE_SETTINGS: SiteSettings = {
+  contact: {
+    address: '123 Demo Parcel Lane, Testford, London, ZZ99 9ZZ, United Kingdom',
+    email: 'support@goldencourier.demo',
+    phone: '+1234567890',
+    supportHours: 'Chat & phone: 24/7',
+    salesHours: 'Sales: Mon–Fri, 8:00–18:00',
+  },
+  about: {
+    eyebrow: 'About Golden Courier',
+    headline: 'Delivery, tracked to the metre.',
+    intro:
+      'Golden Courier combines real-time GPS courier telemetry, geofencing alerts, and verified digital receipts so senders and receivers always know exactly where every parcel stands.',
+    heroImage: FLEET_VAN_IMG,
+    values: [
+      {
+        title: 'Radical transparency',
+        desc: 'Live GPS coordinates, honest pricing, and digital receipts stamped for every penny.',
+      },
+      {
+        title: 'Greener miles',
+        desc: 'Consolidated routes and EV vans in 30 cities cut emissions by 40%.',
+      },
+      {
+        title: 'Humans first',
+        desc: 'Real support, 24/7, and couriers who are paid fairly and reachable directly in-app.',
+      },
+    ],
+    milestones: [
+      { year: '2019', text: 'First 10 couriers in London' },
+      { year: '2021', text: 'Launched live map tracking' },
+      { year: '2023', text: 'International network: 120 countries' },
+      { year: '2025', text: 'Digital stamped receipts & in-app payments' },
+      { year: '2026', text: '16,000 drop points, offline PWA & geofence telemetry' },
+    ],
+  },
+  help: {
+    eyebrow: 'Help Centre',
+    headline: 'How can we help?',
+    searchPlaceholder: 'Search live tracking, receipts, geofences, offline mode...',
+    stillStuckTitle: 'Still stuck?',
+    stillStuckSubtitle:
+      'Our team replies in real time, 24/7 — even when queued from offline mode.',
+    faqs: FAQ_ITEMS.map((item, idx) => ({
+      id: `faq-${idx + 1}`,
+      category: item.category,
+      q: item.q,
+      a: item.a,
+    })),
+  },
+};
+
+export const SEED_SUPPORT_TICKETS: SupportTicket[] = [
+  {
+    id: 'tkt-1001',
+    ticketCode: 'TKT-4821',
+    name: 'Amelia Hart',
+    email: 'amelia@example.com',
+    trackingNo: 'TP26AB100245',
+    category: 'Tracking',
+    priority: 'Normal',
+    subject: 'Delivery window request · TP26AB100245',
+    status: 'open',
+    createdAt: '2026-10-09T11:20:00.000Z',
+    updatedAt: '2026-10-09T11:20:00.000Z',
+    replies: [
+      {
+        id: 'rep-1001-1',
+        senderRole: 'visitor',
+        senderName: 'Amelia Hart',
+        text: 'Could the courier call 15 minutes before reaching Deansgate Manchester?',
+        createdAt: '2026-10-09T11:20:00.000Z',
+      },
+    ],
+  },
+  {
+    id: 'tkt-1002',
+    ticketCode: 'TKT-4822',
+    name: 'Nordic Studio Ltd',
+    email: 'ops@nordicstudio.co.uk',
+    category: 'General',
+    priority: 'Normal',
+    subject: 'Business API webhook verification',
+    status: 'resolved',
+    createdAt: '2026-10-08T16:45:00.000Z',
+    updatedAt: '2026-10-08T17:10:00.000Z',
+    replies: [
+      {
+        id: 'rep-1002-1',
+        senderRole: 'visitor',
+        senderName: 'Nordic Studio Ltd',
+        text: 'Requesting production webhook signing key for monthly bulk CSV batch manifests.',
+        createdAt: '2026-10-08T16:45:00.000Z',
+      },
+      {
+        id: 'rep-1002-2',
+        senderRole: 'admin',
+        senderName: 'Golden Courier Support',
+        text: 'Webhook secret provisioned and tested against your staging endpoint. Let us know if you need another key rotation.',
+        createdAt: '2026-10-08T17:10:00.000Z',
+      },
+    ],
+  },
 ];

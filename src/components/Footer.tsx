@@ -1,12 +1,13 @@
 import React from 'react';
-import type { PageRoute } from '../types';
+import type { PageRoute, SiteSettings } from '../types';
 import { PWAInstallButton } from './PWAInstallButton';
 
 interface FooterProps {
+  contactSettings: SiteSettings['contact'];
   onNavigate: (page: PageRoute) => void;
 }
 
-export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
+export const Footer: React.FC<FooterProps> = ({ contactSettings, onNavigate }) => {
   return (
     <footer className="bg-[#1d1d1f] text-white pt-16 pb-24 lg:pb-12 no-print">
       <div className="max-w-7xl mx-auto px-4 sm:px-6">
@@ -88,10 +89,10 @@ export const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
               Get in touch
             </h4>
             <p className="text-xs text-neutral-400 leading-relaxed mb-2">
-              123 Demo Parcel Lane, Testford, London, ZZ99 9ZZ, United Kingdom
+              {contactSettings.address}
             </p>
-            <p className="text-xs text-neutral-300 font-mono-tabular mb-1">+1234567890</p>
-            <p className="text-xs text-neutral-300">support@goldencourier.demo</p>
+            <p className="text-xs text-neutral-300 font-mono-tabular mb-1">{contactSettings.phone}</p>
+            <p className="text-xs text-neutral-300">{contactSettings.email}</p>
           </div>
         </div>
 

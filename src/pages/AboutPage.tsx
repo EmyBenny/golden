@@ -1,32 +1,25 @@
 import React from 'react';
 import { FLEET_VAN_IMG } from '../data/seedData';
-import type { PageRoute } from '../types';
+import type { PageRoute, SiteSettings } from '../types';
 
 interface AboutPageProps {
+  aboutSettings: SiteSettings['about'];
   onNavigate: (page: PageRoute) => void;
 }
 
-export const AboutPage: React.FC<AboutPageProps> = ({ onNavigate }) => {
-  const milestones = [
-    ['2019', 'First 10 couriers in London'],
-    ['2021', 'Launched live map tracking'],
-    ['2023', 'International network: 120 countries'],
-    ['2025', 'Digital stamped receipts & in-app payments'],
-    ['2026', '16,000 drop points, offline PWA & geofence telemetry'],
-  ];
-
+export const AboutPage: React.FC<AboutPageProps> = ({ aboutSettings, onNavigate }) => {
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-10 pb-24 lg:pb-16 space-y-12">
       <div className="grid lg:grid-cols-12 gap-8 items-center">
         <div className="lg:col-span-6 space-y-4">
           <span className="text-xs font-extrabold uppercase tracking-widest text-[#6b6b70]">
-            About Golden Courier
+            {aboutSettings.eyebrow}
           </span>
           <h1 className="font-display text-4xl sm:text-5xl text-[#1d1d1f] text-balance">
-            Delivery, tracked to the metre.
+            {aboutSettings.headline}
           </h1>
           <p className="text-base text-[#6b6b70] leading-relaxed">
-            Golden Courier combines real-time GPS courier telemetry, geofencing alerts, and verified digital receipts so senders and receivers always know exactly where every parcel stands.
+            {aboutSettings.intro}
           </p>
           <div className="flex flex-wrap gap-3 pt-2">
             <button
@@ -47,7 +40,7 @@ export const AboutPage: React.FC<AboutPageProps> = ({ onNavigate }) => {
         </div>
         <div className="lg:col-span-6">
           <img
-            src={FLEET_VAN_IMG}
+            src={aboutSettings.heroImage || FLEET_VAN_IMG}
             alt="Golden Courier electric delivery van at urban logistics hub"
             referrerPolicy="no-referrer"
             className="w-full h-72 sm:h-88 object-cover border-2 border-[#1d1d1f]"
@@ -57,21 +50,8 @@ export const AboutPage: React.FC<AboutPageProps> = ({ onNavigate }) => {
 
       {/* Values */}
       <div className="grid md:grid-cols-3 gap-6">
-        {[
-          {
-            title: 'Radical transparency',
-            desc: 'Live GPS coordinates, honest pricing, and digital receipts stamped for every penny.',
-          },
-          {
-            title: 'Greener miles',
-            desc: 'Consolidated routes and EV vans in 30 cities cut emissions by 40%.',
-          },
-          {
-            title: 'Humans first',
-            desc: 'Real support, 24/7, and couriers who are paid fairly and reachable directly in-app.',
-          },
-        ].map((v) => (
-          <div key={v.title} className="bg-white border border-neutral-200 p-7 border-t-4 border-t-[#FFCC00]">
+        {aboutSettings.values.map((v, idx) => (
+          <div key={`${v.title}-${idx}`} className="bg-white border border-neutral-200 p-7 border-t-4 border-t-[#FFCC00]">
             <h2 className="font-extrabold text-xl text-[#1d1d1f]">{v.title}</h2>
             <p className="text-sm text-[#6b6b70] mt-2 leading-relaxed">{v.desc}</p>
           </div>
@@ -82,10 +62,10 @@ export const AboutPage: React.FC<AboutPageProps> = ({ onNavigate }) => {
       <div className="bg-[#1d1d1f] text-white p-8 sm:p-10">
         <h2 className="font-display text-3xl text-[#FFCC00] mb-6">Our journey</h2>
         <div className="space-y-4">
-          {milestones.map(([year, text]) => (
-            <div key={year} className="flex items-baseline gap-6 pb-4 border-b border-white/10 last:border-0 last:pb-0">
-              <span className="font-display text-2xl text-[#FFCC00] tabular-nums shrink-0">{year}</span>
-              <span className="text-sm sm:text-base text-neutral-200">{text}</span>
+          {aboutSettings.milestones.map((m, idx) => (
+            <div key={`${m.year}-${idx}`} className="flex items-baseline gap-6 pb-4 border-b border-white/10 last:border-0 last:pb-0">
+              <span className="font-display text-2xl text-[#FFCC00] tabular-nums shrink-0">{m.year}</span>
+              <span className="text-sm sm:text-base text-neutral-200">{m.text}</span>
             </div>
           ))}
         </div>

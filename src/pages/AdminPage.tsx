@@ -1,17 +1,21 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ArrowUpRight,
   BellRing,
   Building2,
   Camera,
   CheckCircle2,
+  Clock,
   Download,
   FileSpreadsheet,
+  Globe,
   ImagePlus,
   Inbox,
   LayoutDashboard,
   LineChart,
   Mail,
+  MapPin,
+  MessageSquare,
   Navigation,
   Package,
   Pencil,
@@ -22,6 +26,7 @@ import {
   Receipt,
   RefreshCw,
   RotateCcw,
+  Save,
   Search,
   Send,
   ShieldCheck,
@@ -30,9 +35,10 @@ import {
   WifiOff,
   X,
 } from 'lucide-react';
-import { ANALYTICS_DAILY_VOLUME, FAQ_ITEMS, REVIEWS } from '../data/seedData';
+import { ANALYTICS_DAILY_VOLUME, REVIEWS } from '../data/seedData';
 import type {
   ContactMessage,
+  FaqItem,
   GeofenceZone,
   LatLngPoint,
   OfflineQueuedAction,
@@ -40,6 +46,8 @@ import type {
   PushAlert,
   ReturnRequest,
   Shipment,
+  SiteSettings,
+  SupportTicket,
 } from '../types';
 import { MapViewport } from '../components/MapViewport';
 import { StampedReceiptCard } from '../components/StampedReceiptCard';
@@ -53,6 +61,7 @@ type AdminTab =
   | 'receipts'
   | 'analytics'
   | 'inbox'
+  | 'content'
   | 'system';
 
 interface AdminPageProps {
@@ -84,6 +93,18 @@ interface AdminPageProps {
   onAdminShipmentsChange: (nextShipments: Shipment[]) => void;
   onAdminAlertsChange: (nextAlerts: PushAlert[]) => void;
   onTriggerAlert: (alert: PushAlert) => void;
+  siteSettings: SiteSettings;
+  onUpdateSiteSettings: (nextSettings: SiteSettings) => Promise<{ ok: boolean; queuedOffline?: boolean }>;
+  supportTickets: SupportTicket[];
+  onTicketsSync: (nextTickets: SupportTicket[]) => void;
+  onReplyTicket: (
+    ticketIdOrCode: string,
+    payload: { senderRole: 'visitor' | 'admin'; senderName: string; text: string }
+  ) => Promise<{ ok: boolean; ticket?: SupportTicket }>;
+  onUpdateTicketStatus: (
+    ticketId: string,
+    status: SupportTicket['status']
+  ) => Promise<{ ok: boolean; ticket?: SupportTicket }>;
 }
 
 const STATUS_OPTIONS = [
@@ -129,6 +150,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   onAdminShipmentsChange,
   onAdminAlertsChange,
   onTriggerAlert,
+  siteSettings,
+  onUpdateSiteSettings,
+  supportTickets,
+  onTicketsSync,
+  onReplyTicket,
+  onUpdateTicketStatus,
 }) => {
   const [activeTab, setActiveTab] = useState<AdminTab>('overview');
   const [searchQuery, setSearchQuery] = useState('');
@@ -139,6 +166,23 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   const [contactMessages, setContactMessages] = useState<ContactMessage[]>([]);
   const [returnRequests, setReturnRequests] = useState<ReturnRequest[]>([]);
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
+
+  // Real-time Support Ticket Desk state
+  const [ticketFilter, setTicketFilter] = useState<'all' | SupportTicket['status']>('all');
+  const [selectedTicketId, setSelectedTicketId] = useState<string>('');
+  const [adminReplyText, setAdminReplyText] = useState('');
+  const [replySending, setReplySending] = useState(false);
+  const ticketChatEndRef = useRef<HTMLDivElement | null>(null);
+
+  // Site Content & Contact Editor Draft state
+  const [settingsDraft, setSettingsDraft] = useState<SiteSettings>(siteSettings);
+  const [savingSettings, setSavingSettings] = useState(false);
+  const [newFaq, setNewFaq] = useState<Omit<FaqItem, 'id'>>({
+    category: 'Tracking & GPS',
+    q: '',
+    a: '',
+  });
+  const [newMilestone, setNewMilestone] = useState({ year: '2026', text: '' });
 
   const SAMPLE_PARCEL_PRESETS = [
     { label: 'Sealed Parcel Box', url: '/src/assets/images/golden_courier_parcels_1795375425863.jpg' },
@@ -279,6 +323,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
         const data = await res.json();
         if (Array.isArray(data.contactMessages)) setContactMessages(data.contactMessages);
         if (Array.isArray(data.returnRequests)) setReturnRequests(data.returnRequests);
+        if (Array.isArray(data.supportTickets)) onTicketsSync(data.supportTickets);
       }
     } catch {
       // Retain local state when offline
@@ -288,6 +333,39 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   useEffect(() => {
     fetchAdminOverview();
   }, [isOnline]);
+
+  useEffect(() => {
+    setSettingsDraft(siteSettings);
+  }, [siteSettings]);
+
+  const filteredTickets = useMemo(() => {
+    const sorted = [...supportTickets].sort(
+      (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+    );
+    if (ticketFilter === 'all') return sorted;
+    return sorted.filter((t) => t.status === ticketFilter);
+  }, [supportTickets, ticketFilter]);
+
+  const activeTicket = useMemo(() => {
+    return (
+      supportTickets.find((t) => t.id === selectedTicketId) ||
+      filteredTickets[0] ||
+      supportTickets[0] ||
+      null
+    );
+  }, [supportTickets, filteredTickets, selectedTicketId]);
+
+  useEffect(() => {
+    if (!selectedTicketId && supportTickets[0]) {
+      setSelectedTicketId(supportTickets[0].id);
+    }
+  }, [supportTickets, selectedTicketId]);
+
+  useEffect(() => {
+    if (activeTab === 'inbox' && activeTicket?.replies.length) {
+      ticketChatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [activeTab, activeTicket?.id, activeTicket?.replies.length]);
 
   useEffect(() => {
     if (!activeShipment) return;
@@ -709,6 +787,87 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     );
   };
 
+  const handleSendAdminReply = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeTicket || !adminReplyText.trim()) return;
+    setReplySending(true);
+    const result = await onReplyTicket(activeTicket.id, {
+      senderRole: 'admin',
+      senderName: 'Golden Courier Support',
+      text: adminReplyText.trim(),
+    });
+    setReplySending(false);
+    if (result.ok) {
+      setAdminReplyText('');
+      showToast(`Real-time reply sent to ${activeTicket.ticketCode}`);
+    }
+  };
+
+  const handleChangeTicketStatus = async (
+    ticketId: string,
+    status: SupportTicket['status']
+  ) => {
+    const res = await onUpdateTicketStatus(ticketId, status);
+    if (res.ok) {
+      showToast(
+        `Ticket status set to ${
+          status === 'in_progress' ? 'In Progress' : status === 'resolved' ? 'Resolved' : 'Open'
+        }`
+      );
+    }
+  };
+
+  const handleSaveSiteSettings = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setSavingSettings(true);
+    const result = await onUpdateSiteSettings(settingsDraft);
+    setSavingSettings(false);
+    if (result.ok) {
+      showToast(
+        result.queuedOffline
+          ? 'Site settings saved locally & queued for server sync'
+          : 'Site contact, About & Help content published live across Golden Courier'
+      );
+    } else {
+      showToast('Failed to save site settings. Please check URLs and required fields.');
+    }
+  };
+
+  const handleAddFaq = () => {
+    if (!newFaq.q.trim() || !newFaq.a.trim()) return;
+    setSettingsDraft((prev) => ({
+      ...prev,
+      help: {
+        ...prev.help,
+        faqs: [
+          ...prev.help.faqs,
+          {
+            id: `faq-${Date.now()}`,
+            category: newFaq.category.trim() || 'General',
+            q: newFaq.q.trim(),
+            a: newFaq.a.trim(),
+          },
+        ],
+      },
+    }));
+    setNewFaq((f) => ({ ...f, q: '', a: '' }));
+  };
+
+  const handleAddMilestone = () => {
+    if (!newMilestone.year.trim() || !newMilestone.text.trim()) return;
+    setSettingsDraft((prev) => ({
+      ...prev,
+      about: {
+        ...prev.about,
+        milestones: [
+          ...prev.about.milestones,
+          { year: newMilestone.year.trim(), text: newMilestone.text.trim() },
+        ],
+      },
+    }));
+    setNewMilestone({ year: '2026', text: '' });
+  };
+
   const handleIssueReturn = async (e: React.FormEvent) => {
     e.preventDefault();
     const code =
@@ -867,7 +1026,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     const deliveredCount = shipments.filter((s) => s.status === 'Delivered').length;
     const deviationsCount = shipments.filter((s) => s.status === 'Route Deviation').length;
     const unreadAlerts = alerts.filter((a) => !a.read).length;
-    const openInbox = contactMessages.filter((m) => m.status === 'open').length;
+    const openTickets = supportTickets.filter((t) => t.status !== 'resolved').length;
+    const openInbox = openTickets + contactMessages.filter((m) => m.status === 'open').length;
     return {
       totalRevenue,
       pendingBalance,
@@ -875,9 +1035,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({
       deliveredCount,
       deviationsCount,
       unreadAlerts,
+      openTickets,
       openInbox,
     };
-  }, [shipments, alerts, contactMessages]);
+  }, [shipments, alerts, contactMessages, supportTickets]);
 
   const NAV_ITEMS: Array<{ id: AdminTab; label: string; icon: React.ComponentType<{ className?: string }>; badge?: number }> = [
     { id: 'overview', label: 'Overview', icon: LayoutDashboard },
@@ -886,7 +1047,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     { id: 'alerts', label: 'Push Alerts', icon: BellRing, badge: metrics.unreadAlerts },
     { id: 'receipts', label: 'Payments & Receipts', icon: Receipt },
     { id: 'analytics', label: 'Fleet Analytics', icon: LineChart },
-    { id: 'inbox', label: 'Inbox & Returns', icon: Inbox, badge: metrics.openInbox },
+    { id: 'inbox', label: 'Support Tickets & Returns', icon: Inbox, badge: metrics.openInbox },
+    { id: 'content', label: 'Site Content & Contact', icon: Globe },
     { id: 'system', label: 'Business & Offline Sync', icon: Building2, badge: offlineQueue.length },
   ];
 
@@ -1854,26 +2016,257 @@ export const AdminPage: React.FC<AdminPageProps> = ({
             </div>
           )}
 
-          {/* ================= INBOX, RETURNS & CONTENT TAB ================= */}
+          {/* ================= REAL-TIME SUPPORT TICKETS & RETURNS TAB ================= */}
           {activeTab === 'inbox' && (
             <div className="space-y-6">
-              {/* Contact Messages Inbox */}
+              {/* Real-Time Support Tickets & Live Reply Desk */}
               <div className="bg-white border border-neutral-200 p-5 space-y-4">
-                <h2 className="font-extrabold text-base text-[#1d1d1f]">
-                  Customer Support Inbox ({contactMessages.length})
-                </h2>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h2 className="font-extrabold text-base text-[#1d1d1f] flex items-center gap-2">
+                      <MessageSquare className="w-4 h-4 text-[#1B6CFF]" />
+                      <span>Real-Time Support Tickets ({supportTickets.length})</span>
+                    </h2>
+                    <p className="text-xs text-[#6b6b70]">
+                      Replies stream instantly to visitors in real time over SSE without page refresh.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {(
+                      [
+                        ['all', 'All'],
+                        ['open', 'Open'],
+                        ['in_progress', 'In Progress'],
+                        ['resolved', 'Resolved'],
+                      ] as const
+                    ).map(([statusKey, label]) => (
+                      <button
+                        key={statusKey}
+                        type="button"
+                        onClick={() => setTicketFilter(statusKey)}
+                        className={`px-3 py-1 text-[11px] font-bold border cursor-pointer ${
+                          ticketFilter === statusKey
+                            ? 'bg-[#1d1d1f] text-[#FFCC00] border-[#1d1d1f]'
+                            : 'bg-white text-[#1d1d1f] border-neutral-300 hover:bg-[#f2f2f2]'
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
-                {contactMessages.length === 0 ? (
-                  <p className="text-xs text-[#6b6b70]">No customer messages submitted yet.</p>
+                {supportTickets.length === 0 ? (
+                  <p className="text-xs text-[#6b6b70] py-6 text-center border border-dashed border-neutral-300">
+                    No support tickets submitted yet.
+                  </p>
                 ) : (
+                  <div className="grid lg:grid-cols-12 border border-neutral-200 min-h-[420px]">
+                    {/* Left Column: Ticket List */}
+                    <div className="lg:col-span-5 border-b lg:border-b-0 lg:border-r border-neutral-200 divide-y divide-neutral-200 max-h-[520px] overflow-y-auto">
+                      {filteredTickets.length === 0 ? (
+                        <p className="p-4 text-xs text-[#6b6b70]">
+                          No tickets match the selected filter.
+                        </p>
+                      ) : (
+                        filteredTickets.map((ticket) => {
+                          const selected = activeTicket?.id === ticket.id;
+                          const lastMsg = ticket.replies[ticket.replies.length - 1];
+                          const waitingOnAdmin = lastMsg?.senderRole === 'visitor' && ticket.status !== 'resolved';
+                          return (
+                            <button
+                              key={ticket.id}
+                              type="button"
+                              onClick={() => setSelectedTicketId(ticket.id)}
+                              className={`w-full text-left p-3.5 transition-colors cursor-pointer ${
+                                selected
+                                  ? 'bg-[#FFF6CC] border-l-4 border-l-[#1d1d1f]'
+                                  : 'bg-white hover:bg-[#f2f2f2]'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-2 mb-1">
+                                <span className="font-mono-tabular text-[11px] font-extrabold text-[#1d1d1f]">
+                                  {ticket.ticketCode}
+                                </span>
+                                <div className="flex items-center gap-1.5">
+                                  {waitingOnAdmin && (
+                                    <span className="px-1.5 py-0.5 bg-[#FF5A1F] text-white text-[9px] font-extrabold uppercase">
+                                      Needs Reply
+                                    </span>
+                                  )}
+                                  <span
+                                    className={`px-2 py-0.5 text-[10px] font-bold uppercase ${
+                                      ticket.status === 'resolved'
+                                        ? 'bg-emerald-100 text-emerald-900'
+                                        : ticket.status === 'in_progress'
+                                          ? 'bg-blue-100 text-blue-900'
+                                          : 'bg-[#FFE68A] text-[#1d1d1f]'
+                                    }`}
+                                  >
+                                    {ticket.status === 'in_progress' ? 'Replied' : ticket.status}
+                                  </span>
+                                </div>
+                              </div>
+                              <p className="text-xs font-extrabold text-[#1d1d1f] truncate">
+                                {ticket.subject}
+                              </p>
+                              <p className="text-[11px] text-[#6b6b70] truncate mt-0.5">
+                                {ticket.name} · {ticket.email}
+                              </p>
+                              <div className="flex items-center justify-between mt-1.5 text-[10px] text-[#6b6b70]">
+                                <span>
+                                  {ticket.category}
+                                  {ticket.trackingNo ? ` · #${ticket.trackingNo}` : ''}
+                                </span>
+                                <span className="font-mono-tabular">
+                                  {ticket.replies.length} msg{ticket.replies.length === 1 ? '' : 's'}
+                                </span>
+                              </div>
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+
+                    {/* Right Column: Live Ticket Conversation & Reply Box */}
+                    <div className="lg:col-span-7 flex flex-col bg-[#f9f9fb]">
+                      {activeTicket ? (
+                        <>
+                          <div className="p-4 bg-white border-b border-neutral-200 flex flex-wrap items-center justify-between gap-3">
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-mono-tabular text-xs font-extrabold bg-[#1d1d1f] text-[#FFCC00] px-2 py-0.5">
+                                  {activeTicket.ticketCode}
+                                </span>
+                                <span className="text-xs font-extrabold text-[#1d1d1f] truncate">
+                                  {activeTicket.subject}
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-[#6b6b70] mt-1">
+                                Visitor: <strong>{activeTicket.name}</strong> ({activeTicket.email})
+                                {activeTicket.trackingNo ? (
+                                  <>
+                                    {' · Parcel '}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        onSelectTracking(activeTicket.trackingNo!);
+                                        onNavigate('track');
+                                      }}
+                                      className="font-mono-tabular font-bold text-[#1B6CFF] underline cursor-pointer"
+                                    >
+                                      #{activeTicket.trackingNo}
+                                    </button>
+                                  </>
+                                ) : null}
+                              </p>
+                            </div>
+
+                            <div className="flex items-center gap-1.5">
+                              {(['open', 'in_progress', 'resolved'] as const).map((st) => (
+                                <button
+                                  key={st}
+                                  type="button"
+                                  onClick={() => handleChangeTicketStatus(activeTicket.id, st)}
+                                  className={`px-2.5 py-1 text-[10px] font-bold uppercase border cursor-pointer ${
+                                    activeTicket.status === st
+                                      ? 'bg-[#1d1d1f] text-[#FFCC00] border-[#1d1d1f]'
+                                      : 'bg-white text-[#1d1d1f] border-neutral-300 hover:bg-[#f2f2f2]'
+                                  }`}
+                                >
+                                  {st === 'in_progress' ? 'In Progress' : st}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
+                          {/* Real-Time Chat Messages */}
+                          <div className="flex-1 p-4 space-y-3 overflow-y-auto max-h-[310px]">
+                            {activeTicket.replies.map((rep) => {
+                              const isAdminMsg = rep.senderRole === 'admin';
+                              return (
+                                <div
+                                  key={rep.id}
+                                  className={`flex flex-col ${isAdminMsg ? 'items-end' : 'items-start'}`}
+                                >
+                                  <div
+                                    className={`max-w-[85%] px-3.5 py-2.5 text-xs border ${
+                                      isAdminMsg
+                                        ? 'bg-[#1d1d1f] text-white border-[#1d1d1f]'
+                                        : 'bg-white text-[#1d1d1f] border-neutral-300'
+                                    }`}
+                                  >
+                                    <div className="flex items-center justify-between gap-3 mb-1 text-[10px]">
+                                      <span
+                                        className={`font-extrabold ${
+                                          isAdminMsg ? 'text-[#FFCC00]' : 'text-[#1B6CFF]'
+                                        }`}
+                                      >
+                                        {rep.senderName}
+                                      </span>
+                                      <span
+                                        className={isAdminMsg ? 'text-neutral-400' : 'text-[#6b6b70]'}
+                                      >
+                                        {new Date(rep.createdAt).toLocaleTimeString([], {
+                                          hour: '2-digit',
+                                          minute: '2-digit',
+                                        })}
+                                      </span>
+                                    </div>
+                                    <p className="leading-relaxed whitespace-pre-wrap">{rep.text}</p>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                            <div ref={ticketChatEndRef} />
+                          </div>
+
+                          {/* Instant Admin Reply Form */}
+                          <form
+                            onSubmit={handleSendAdminReply}
+                            className="p-3 bg-white border-t border-neutral-200 flex gap-2"
+                          >
+                            <input
+                              type="text"
+                              value={adminReplyText}
+                              onChange={(e) => setAdminReplyText(e.target.value)}
+                              placeholder={`Reply in real time to ${activeTicket.name}...`}
+                              className="flex-1 border border-neutral-300 px-3 py-2 text-xs focus:outline-none focus:border-[#1d1d1f]"
+                            />
+                            <button
+                              type="submit"
+                              disabled={replySending || !adminReplyText.trim()}
+                              className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#FFCC00] border border-[#1d1d1f] text-[#1d1d1f] text-xs font-extrabold hover:bg-[#1d1d1f] hover:text-[#FFCC00] disabled:opacity-40 transition-colors cursor-pointer"
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                              <span>{replySending ? 'Sending...' : 'Send Reply'}</span>
+                            </button>
+                          </form>
+                        </>
+                      ) : (
+                        <div className="flex-1 flex items-center justify-center p-6 text-xs text-[#6b6b70]">
+                          Select a support ticket to view and reply in real time.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Legacy Contact Messages (if any offline queued) */}
+              {contactMessages.length > 0 && (
+                <div className="bg-white border border-neutral-200 p-5 space-y-3">
+                  <h3 className="font-extrabold text-sm text-[#1d1d1f]">
+                    Archived Contact Notes ({contactMessages.length})
+                  </h3>
                   <div className="divide-y divide-neutral-200 border border-neutral-200">
                     {contactMessages.map((msg) => (
-                      <div key={msg.id} className="p-4 space-y-2.5 text-xs">
+                      <div key={msg.id} className="p-3.5 space-y-2 text-xs">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div>
                             <span className="font-extrabold text-[#1d1d1f]">{msg.subject}</span>
-                            <span className="block text-[#6b6b70]">
-                              From {msg.name} ({msg.email})
+                            <span className="ml-2 text-[#6b6b70]">
+                              {msg.name} ({msg.email})
                             </span>
                           </div>
                           <span
@@ -1886,7 +2279,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                             {msg.status}
                           </span>
                         </div>
-                        <p className="text-[#1d1d1f] bg-[#f2f2f2] p-3">{msg.message}</p>
+                        <p className="text-[#1d1d1f] bg-[#f2f2f2] p-2.5">{msg.message}</p>
                         <div className="flex flex-col sm:flex-row gap-2">
                           <input
                             type="text"
@@ -1902,14 +2295,14 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                             onClick={() => handleToggleContactStatus(msg)}
                             className="px-4 py-1.5 bg-[#1d1d1f] text-[#FFCC00] font-bold cursor-pointer"
                           >
-                            {msg.status === 'resolved' ? 'Reopen Ticket' : 'Mark Resolved'}
+                            {msg.status === 'resolved' ? 'Reopen' : 'Mark Resolved'}
                           </button>
                         </div>
                       </div>
                     ))}
                   </div>
-                )}
-              </div>
+                </div>
+              )}
 
               {/* Returns Queue */}
               <div className="bg-white border border-neutral-200 p-5 space-y-4">
@@ -1988,17 +2381,19 @@ export const AdminPage: React.FC<AdminPageProps> = ({
               <div className="grid md:grid-cols-2 gap-6">
                 <div className="bg-white border border-neutral-200 p-5 space-y-2">
                   <div className="flex items-center justify-between mb-2">
-                    <h3 className="font-extrabold text-sm">Published Help FAQs ({FAQ_ITEMS.length})</h3>
+                    <h3 className="font-extrabold text-sm">
+                      Published Help FAQs ({siteSettings.help.faqs.length})
+                    </h3>
                     <button
                       type="button"
-                      onClick={() => onNavigate('help')}
+                      onClick={() => setActiveTab('content')}
                       className="text-xs font-bold text-[#1B6CFF] hover:underline cursor-pointer"
                     >
-                      View Help Page
+                      Edit FAQs &amp; Content →
                     </button>
                   </div>
-                  {FAQ_ITEMS.slice(0, 5).map((item) => (
-                    <div key={item.q} className="text-xs py-1.5 border-b border-neutral-100">
+                  {siteSettings.help.faqs.slice(0, 5).map((item, i) => (
+                    <div key={`${item.q}-${i}`} className="text-xs py-1.5 border-b border-neutral-100">
                       <span className="font-bold block">{item.q}</span>
                       <span className="text-[#6b6b70]">{item.category}</span>
                     </div>
@@ -2027,6 +2422,578 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                 </div>
               </div>
             </div>
+          )}
+
+          {/* ================= SITE CONTENT, CONTACT, ABOUT & HELP EDITOR TAB ================= */}
+          {activeTab === 'content' && (
+            <form onSubmit={handleSaveSiteSettings} className="space-y-6">
+              {/* Top Save Action Bar */}
+              <div className="bg-white border-2 border-[#1d1d1f] p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                <div>
+                  <h2 className="font-extrabold text-base text-[#1d1d1f]">
+                    Live Site Content, Contact Info, About &amp; Help Editor
+                  </h2>
+                  <p className="text-xs text-[#6b6b70]">
+                    Changes saved here update the Footer, Contact page, About page, Help Centre, and Digital Receipts in real time.
+                  </p>
+                </div>
+                <button
+                  type="submit"
+                  disabled={savingSettings}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#FFCC00] text-[#1d1d1f] border border-[#1d1d1f] text-xs font-extrabold hover:bg-[#1d1d1f] hover:text-[#FFCC00] transition-colors shrink-0 cursor-pointer disabled:opacity-50"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>{savingSettings ? 'Publishing...' : 'Publish All Changes Live'}</span>
+                </button>
+              </div>
+
+              {/* 1. Company Address, Email, Phone & Hours */}
+              <div className="bg-white border border-neutral-200 p-5 space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-extrabold text-sm text-[#1d1d1f] flex items-center gap-2">
+                    <MapPin className="w-4 h-4 text-[#1B6CFF]" />
+                    <span>Company Address, Email, Phone &amp; Hours</span>
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('contact')}
+                    className="text-xs font-bold text-[#1B6CFF] hover:underline cursor-pointer"
+                  >
+                    Preview Contact Page →
+                  </button>
+                </div>
+
+                <div className="grid sm:grid-cols-2 gap-4 text-xs">
+                  <div className="sm:col-span-2">
+                    <label className="block font-bold mb-1">Head Office Address</label>
+                    <input
+                      type="text"
+                      required
+                      value={settingsDraft.contact.address}
+                      onChange={(e) =>
+                        setSettingsDraft((prev) => ({
+                          ...prev,
+                          contact: { ...prev.contact, address: e.target.value },
+                        }))
+                      }
+                      className="w-full border border-neutral-300 px-3 py-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold mb-1">Support Email</label>
+                    <input
+                      type="email"
+                      required
+                      value={settingsDraft.contact.email}
+                      onChange={(e) =>
+                        setSettingsDraft((prev) => ({
+                          ...prev,
+                          contact: { ...prev.contact, email: e.target.value },
+                        }))
+                      }
+                      className="w-full border border-neutral-300 px-3 py-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold mb-1">Support Phone Number</label>
+                    <input
+                      type="text"
+                      required
+                      value={settingsDraft.contact.phone}
+                      onChange={(e) =>
+                        setSettingsDraft((prev) => ({
+                          ...prev,
+                          contact: { ...prev.contact, phone: e.target.value },
+                        }))
+                      }
+                      className="w-full border border-neutral-300 px-3 py-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold mb-1 flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-[#6b6b70]" />
+                      <span>Support Line Hours</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={settingsDraft.contact.supportHours}
+                      onChange={(e) =>
+                        setSettingsDraft((prev) => ({
+                          ...prev,
+                          contact: { ...prev.contact, supportHours: e.target.value },
+                        }))
+                      }
+                      className="w-full border border-neutral-300 px-3 py-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold mb-1">Commercial / Fleet Hours</label>
+                    <input
+                      type="text"
+                      value={settingsDraft.contact.salesHours}
+                      onChange={(e) =>
+                        setSettingsDraft((prev) => ({
+                          ...prev,
+                          contact: { ...prev.contact, salesHours: e.target.value },
+                        }))
+                      }
+                      className="w-full border border-neutral-300 px-3 py-2"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* 2. About Page Content Editor */}
+              <div className="bg-white border border-neutral-200 p-5 space-y-5">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-extrabold text-sm text-[#1d1d1f]">
+                    About Golden Courier Page Content
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('about')}
+                    className="text-xs font-bold text-[#1B6CFF] hover:underline cursor-pointer"
+                  >
+                    Preview About Page →
+                  </button>
+                </div>
+
+                <div className="grid sm:grid-cols-2 gap-4 text-xs">
+                  <div>
+                    <label className="block font-bold mb-1">Eyebrow Label</label>
+                    <input
+                      type="text"
+                      value={settingsDraft.about.eyebrow}
+                      onChange={(e) =>
+                        setSettingsDraft((prev) => ({
+                          ...prev,
+                          about: { ...prev.about, eyebrow: e.target.value },
+                        }))
+                      }
+                      className="w-full border border-neutral-300 px-3 py-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold mb-1">Hero Headline</label>
+                    <input
+                      type="text"
+                      value={settingsDraft.about.headline}
+                      onChange={(e) =>
+                        setSettingsDraft((prev) => ({
+                          ...prev,
+                          about: { ...prev.about, headline: e.target.value },
+                        }))
+                      }
+                      className="w-full border border-neutral-300 px-3 py-2"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="block font-bold mb-1">About Introduction Paragraph</label>
+                    <textarea
+                      rows={3}
+                      value={settingsDraft.about.intro}
+                      onChange={(e) =>
+                        setSettingsDraft((prev) => ({
+                          ...prev,
+                          about: { ...prev.about, intro: e.target.value },
+                        }))
+                      }
+                      className="w-full border border-neutral-300 px-3 py-2"
+                    />
+                  </div>
+                  <div className="sm:col-span-2 space-y-2">
+                    <label className="block font-bold">Hero Image URL</label>
+                    <input
+                      type="text"
+                      value={settingsDraft.about.heroImage}
+                      onChange={(e) =>
+                        setSettingsDraft((prev) => ({
+                          ...prev,
+                          about: { ...prev.about, heroImage: e.target.value },
+                        }))
+                      }
+                      className="w-full border border-neutral-300 px-3 py-2 font-mono-tabular"
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      {[
+                        {
+                          label: 'Team Operations',
+                          url: '/src/assets/images/golden_courier_team_1795375425251.jpg',
+                        },
+                        {
+                          label: 'EV Courier Van',
+                          url: '/src/assets/images/about_fleet_team_1795252246049.jpg',
+                        },
+                        {
+                          label: 'Doorstep Delivery',
+                          url: '/src/assets/images/golden_courier_driver_1795375426210.jpg',
+                        },
+                      ].map((preset) => (
+                        <button
+                          key={preset.url}
+                          type="button"
+                          onClick={() =>
+                            setSettingsDraft((prev) => ({
+                              ...prev,
+                              about: { ...prev.about, heroImage: preset.url },
+                            }))
+                          }
+                          className="px-2.5 py-1 bg-[#f2f2f2] border border-neutral-300 hover:border-[#1d1d1f] text-[11px] font-bold cursor-pointer"
+                        >
+                          Use {preset.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Core Values (3 columns) */}
+                <div className="space-y-2 pt-2 border-t border-neutral-200">
+                  <span className="text-xs font-extrabold text-[#1d1d1f] block">
+                    Core Values ({settingsDraft.about.values.length})
+                  </span>
+                  <div className="grid md:grid-cols-3 gap-3 text-xs">
+                    {settingsDraft.about.values.map((val, idx) => (
+                      <div key={idx} className="p-3 bg-[#f2f2f2] border border-neutral-200 space-y-2">
+                        <input
+                          type="text"
+                          value={val.title}
+                          onChange={(e) =>
+                            setSettingsDraft((prev) => ({
+                              ...prev,
+                              about: {
+                                ...prev.about,
+                                values: prev.about.values.map((v, i) =>
+                                  i === idx ? { ...v, title: e.target.value } : v
+                                ),
+                              },
+                            }))
+                          }
+                          className="w-full border border-neutral-300 px-2.5 py-1.5 bg-white font-bold"
+                        />
+                        <textarea
+                          rows={3}
+                          value={val.desc}
+                          onChange={(e) =>
+                            setSettingsDraft((prev) => ({
+                              ...prev,
+                              about: {
+                                ...prev.about,
+                                values: prev.about.values.map((v, i) =>
+                                  i === idx ? { ...v, desc: e.target.value } : v
+                                ),
+                              },
+                            }))
+                          }
+                          className="w-full border border-neutral-300 px-2.5 py-1.5 bg-white"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Milestones */}
+                <div className="space-y-3 pt-2 border-t border-neutral-200 text-xs">
+                  <span className="font-extrabold text-[#1d1d1f] block">
+                    Company Milestones ({settingsDraft.about.milestones.length})
+                  </span>
+                  <div className="space-y-2">
+                    {settingsDraft.about.milestones.map((m, idx) => (
+                      <div key={idx} className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
+                        <input
+                          type="text"
+                          value={m.year}
+                          onChange={(e) =>
+                            setSettingsDraft((prev) => ({
+                              ...prev,
+                              about: {
+                                ...prev.about,
+                                milestones: prev.about.milestones.map((item, i) =>
+                                  i === idx ? { ...item, year: e.target.value } : item
+                                ),
+                              },
+                            }))
+                          }
+                          className="w-full sm:w-24 border border-neutral-300 px-2.5 py-1.5 font-mono-tabular font-bold"
+                        />
+                        <input
+                          type="text"
+                          value={m.text}
+                          onChange={(e) =>
+                            setSettingsDraft((prev) => ({
+                              ...prev,
+                              about: {
+                                ...prev.about,
+                                milestones: prev.about.milestones.map((item, i) =>
+                                  i === idx ? { ...item, text: e.target.value } : item
+                                ),
+                              },
+                            }))
+                          }
+                          className="flex-1 border border-neutral-300 px-2.5 py-1.5"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setSettingsDraft((prev) => ({
+                              ...prev,
+                              about: {
+                                ...prev.about,
+                                milestones: prev.about.milestones.filter((_, i) => i !== idx),
+                              },
+                            }))
+                          }
+                          className="px-2.5 py-1.5 border border-red-200 text-red-700 hover:bg-red-600 hover:text-white font-bold cursor-pointer"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                    <input
+                      type="text"
+                      placeholder="Year"
+                      value={newMilestone.year}
+                      onChange={(e) => setNewMilestone((m) => ({ ...m, year: e.target.value }))}
+                      className="w-full sm:w-24 border border-neutral-300 px-2.5 py-1.5 font-mono-tabular"
+                    />
+                    <input
+                      type="text"
+                      placeholder="Add new company milestone..."
+                      value={newMilestone.text}
+                      onChange={(e) => setNewMilestone((m) => ({ ...m, text: e.target.value }))}
+                      className="flex-1 border border-neutral-300 px-2.5 py-1.5"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAddMilestone}
+                      className="px-4 py-1.5 bg-[#1d1d1f] text-[#FFCC00] font-bold cursor-pointer"
+                    >
+                      + Add Milestone
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* 3. Help Centre & FAQs Editor */}
+              <div className="bg-white border border-neutral-200 p-5 space-y-5">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-extrabold text-sm text-[#1d1d1f]">
+                    Help Centre &amp; Published FAQs ({settingsDraft.help.faqs.length})
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => onNavigate('help')}
+                    className="text-xs font-bold text-[#1B6CFF] hover:underline cursor-pointer"
+                  >
+                    Preview Help Page →
+                  </button>
+                </div>
+
+                <div className="grid sm:grid-cols-2 gap-4 text-xs">
+                  <div>
+                    <label className="block font-bold mb-1">Help Eyebrow Label</label>
+                    <input
+                      type="text"
+                      value={settingsDraft.help.eyebrow}
+                      onChange={(e) =>
+                        setSettingsDraft((prev) => ({
+                          ...prev,
+                          help: { ...prev.help, eyebrow: e.target.value },
+                        }))
+                      }
+                      className="w-full border border-neutral-300 px-3 py-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold mb-1">Help Page Headline</label>
+                    <input
+                      type="text"
+                      value={settingsDraft.help.headline}
+                      onChange={(e) =>
+                        setSettingsDraft((prev) => ({
+                          ...prev,
+                          help: { ...prev.help, headline: e.target.value },
+                        }))
+                      }
+                      className="w-full border border-neutral-300 px-3 py-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold mb-1">Search Placeholder</label>
+                    <input
+                      type="text"
+                      value={settingsDraft.help.searchPlaceholder}
+                      onChange={(e) =>
+                        setSettingsDraft((prev) => ({
+                          ...prev,
+                          help: { ...prev.help, searchPlaceholder: e.target.value },
+                        }))
+                      }
+                      className="w-full border border-neutral-300 px-3 py-2"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-bold mb-1">CTA Box Title</label>
+                    <input
+                      type="text"
+                      value={settingsDraft.help.stillStuckTitle}
+                      onChange={(e) =>
+                        setSettingsDraft((prev) => ({
+                          ...prev,
+                          help: { ...prev.help, stillStuckTitle: e.target.value },
+                        }))
+                      }
+                      className="w-full border border-neutral-300 px-3 py-2"
+                    />
+                  </div>
+                  <div className="sm:col-span-2">
+                    <label className="block font-bold mb-1">CTA Box Subtitle</label>
+                    <input
+                      type="text"
+                      value={settingsDraft.help.stillStuckSubtitle}
+                      onChange={(e) =>
+                        setSettingsDraft((prev) => ({
+                          ...prev,
+                          help: { ...prev.help, stillStuckSubtitle: e.target.value },
+                        }))
+                      }
+                      className="w-full border border-neutral-300 px-3 py-2"
+                    />
+                  </div>
+                </div>
+
+                {/* FAQ List Editor */}
+                <div className="space-y-3 pt-2 border-t border-neutral-200 text-xs">
+                  <span className="font-extrabold text-[#1d1d1f] block">
+                    Manage Help Articles &amp; FAQs
+                  </span>
+                  <div className="space-y-3">
+                    {settingsDraft.help.faqs.map((faq, idx) => (
+                      <div key={idx} className="p-3.5 bg-[#f2f2f2] border border-neutral-200 space-y-2">
+                        <div className="flex flex-col sm:flex-row gap-2">
+                          <input
+                            type="text"
+                            value={faq.category}
+                            placeholder="Category"
+                            onChange={(e) =>
+                              setSettingsDraft((prev) => ({
+                                ...prev,
+                                help: {
+                                  ...prev.help,
+                                  faqs: prev.help.faqs.map((item, i) =>
+                                    i === idx ? { ...item, category: e.target.value } : item
+                                  ),
+                                },
+                              }))
+                            }
+                            className="sm:w-48 border border-neutral-300 px-2.5 py-1.5 bg-white font-bold"
+                          />
+                          <input
+                            type="text"
+                            value={faq.q}
+                            placeholder="Question"
+                            onChange={(e) =>
+                              setSettingsDraft((prev) => ({
+                                ...prev,
+                                help: {
+                                  ...prev.help,
+                                  faqs: prev.help.faqs.map((item, i) =>
+                                    i === idx ? { ...item, q: e.target.value } : item
+                                  ),
+                                },
+                              }))
+                            }
+                            className="flex-1 border border-neutral-300 px-2.5 py-1.5 bg-white font-bold"
+                          />
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setSettingsDraft((prev) => ({
+                                ...prev,
+                                help: {
+                                  ...prev.help,
+                                  faqs: prev.help.faqs.filter((_, i) => i !== idx),
+                                },
+                              }))
+                            }
+                            className="px-2.5 py-1.5 border border-red-200 text-red-700 hover:bg-red-600 hover:text-white font-bold cursor-pointer"
+                          >
+                            Delete
+                          </button>
+                        </div>
+                        <textarea
+                          rows={2}
+                          value={faq.a}
+                          placeholder="Answer"
+                          onChange={(e) =>
+                            setSettingsDraft((prev) => ({
+                              ...prev,
+                              help: {
+                                ...prev.help,
+                                faqs: prev.help.faqs.map((item, i) =>
+                                  i === idx ? { ...item, a: e.target.value } : item
+                                ),
+                              },
+                            }))
+                          }
+                          className="w-full border border-neutral-300 px-2.5 py-1.5 bg-white"
+                        />
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Add New FAQ */}
+                  <div className="p-4 border-2 border-dashed border-neutral-300 space-y-2.5 bg-white">
+                    <span className="font-extrabold text-[#1d1d1f] block">+ Add New FAQ Entry</span>
+                    <div className="grid sm:grid-cols-3 gap-2">
+                      <input
+                        type="text"
+                        placeholder="Category (e.g. Tracking & GPS)"
+                        value={newFaq.category}
+                        onChange={(e) => setNewFaq((f) => ({ ...f, category: e.target.value }))}
+                        className="border border-neutral-300 px-2.5 py-1.5"
+                      />
+                      <input
+                        type="text"
+                        placeholder="Question..."
+                        value={newFaq.q}
+                        onChange={(e) => setNewFaq((f) => ({ ...f, q: e.target.value }))}
+                        className="sm:col-span-2 border border-neutral-300 px-2.5 py-1.5"
+                      />
+                    </div>
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <input
+                        type="text"
+                        placeholder="Detailed answer shown on Help & Home pages..."
+                        value={newFaq.a}
+                        onChange={(e) => setNewFaq((f) => ({ ...f, a: e.target.value }))}
+                        className="flex-1 border border-neutral-300 px-2.5 py-1.5"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddFaq}
+                        className="px-4 py-1.5 bg-[#1d1d1f] text-[#FFCC00] font-bold cursor-pointer"
+                      >
+                        + Add FAQ
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex justify-end pt-3 border-t border-neutral-200">
+                  <button
+                    type="submit"
+                    disabled={savingSettings}
+                    className="inline-flex items-center gap-2 px-6 py-2.5 bg-[#FFCC00] text-[#1d1d1f] border border-[#1d1d1f] text-xs font-extrabold hover:bg-[#1d1d1f] hover:text-[#FFCC00] transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    <Save className="w-4 h-4" />
+                    <span>{savingSettings ? 'Publishing...' : 'Save & Publish All Site Content'}</span>
+                  </button>
+                </div>
+              </div>
+            </form>
           )}
 
           {/* ================= BUSINESS BULK CSV & OFFLINE SYNC TAB ================= */}
@@ -2775,7 +3742,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <StampedReceiptCard shipment={previewReceiptShipment} />
+            <StampedReceiptCard
+              shipment={previewReceiptShipment}
+              contactSettings={siteSettings.contact}
+            />
           </div>
         </div>
       )}
