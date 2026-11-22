@@ -2,20 +2,18 @@ import React, { useEffect, useState } from 'react';
 import {
   ArrowRight,
   ChevronDown,
-  Globe,
   LineChart,
   MapPin,
-  Package,
   QrCode,
   Search,
   ShieldCheck,
-  Smartphone,
   Star,
   Truck,
 } from 'lucide-react';
 import { FAQ_ITEMS, REVIEWS } from '../data/seedData';
 import type { PageRoute, Shipment } from '../types';
 import { PWAInstallButton } from '../components/PWAInstallButton';
+import { HomeMediaShowcase } from '../components/HomeMediaShowcase';
 
 interface HomePageProps {
   shipments: Shipment[];
@@ -259,6 +257,9 @@ export const HomePage: React.FC<HomePageProps> = ({
           </button>
         </div>
       </section>
+
+      {/* INTERACTIVE VIDEO REEL, PARCELS/COURIERS/PEOPLE GALLERY & ENGAGEMENTS */}
+      <HomeMediaShowcase onNavigate={onNavigate} />
 
       {/* THE GOLDEN COURIER APP SHOWCASE */}
       <section className="py-16 bg-white border-y border-neutral-200">
@@ -531,46 +532,48 @@ export const HomePage: React.FC<HomePageProps> = ({
                 title: 'Save your faves',
                 desc: 'Your delivery, your rules. Set a go-to drop point, a safe place and a trusted neighbour.',
                 cta: 'Power back to you',
-                bg: 'bg-[#00C853]',
-                icon: Package,
+                image: '/src/assets/images/golden_courier_driver_1795375426210.jpg',
+                alt: 'Golden Courier driver delivering parcel to customer doorstep',
               },
               {
                 title: 'There’s no place like out-of-home',
                 desc: 'Make deliveries work around your life with 24/7 pickup points and smart lockers.',
                 cta: 'Explore drop points',
-                bg: 'bg-[#FFE68A]',
-                icon: Globe,
+                image: '/src/assets/images/golden_courier_locker_1795375425922.jpg',
+                alt: 'Customer collecting parcel at 24/7 Golden Courier smart locker',
               },
               {
                 title: '9 Golden Courier tricks worth knowing',
                 desc: 'Discover offline map caching, geofence alerts, and route playback shortcuts power users swear by.',
                 cta: 'Open Help Centre',
-                bg: 'bg-[#FF1FBF]',
-                icon: Smartphone,
+                image: '/src/assets/images/golden_courier_parcels_1795375425863.jpg',
+                alt: 'Golden Courier sealed priority parcels ready for dispatch',
               },
-            ].map((post) => {
-              const Icon = post.icon;
-              return (
-                <button
-                  key={post.title}
-                  type="button"
-                  onClick={() => onNavigate('help')}
-                  className="bg-[#f2f2f2] text-left flex flex-col border border-neutral-200 hover:border-[#1d1d1f] transition-colors cursor-pointer group"
-                >
-                  <div className={`h-44 ${post.bg} flex items-center justify-center`}>
-                    <Icon className="w-16 h-16 text-[#1d1d1f]/80 group-hover:scale-110 transition-transform" />
-                  </div>
-                  <div className="p-6 flex-1 flex flex-col">
-                    <h3 className="font-extrabold text-xl text-[#1d1d1f]">{post.title}</h3>
-                    <p className="mt-2 text-sm text-[#6b6b70] leading-relaxed">{post.desc}</p>
-                    <span className="mt-5 pt-4 text-sm font-extrabold text-[#1d1d1f] inline-flex items-center gap-2">
-                      {post.cta}
-                      <ArrowRight className="w-4 h-4" />
-                    </span>
-                  </div>
-                </button>
-              );
-            })}
+            ].map((post) => (
+              <button
+                key={post.title}
+                type="button"
+                onClick={() => onNavigate('help')}
+                className="bg-[#f2f2f2] text-left flex flex-col border border-neutral-200 hover:border-[#1d1d1f] transition-colors cursor-pointer group overflow-hidden"
+              >
+                <div className="h-48 w-full overflow-hidden bg-[#1d1d1f]">
+                  <img
+                    src={post.image}
+                    alt={post.alt}
+                    referrerPolicy="no-referrer"
+                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                  />
+                </div>
+                <div className="p-6 flex-1 flex flex-col">
+                  <h3 className="font-extrabold text-xl text-[#1d1d1f]">{post.title}</h3>
+                  <p className="mt-2 text-sm text-[#6b6b70] leading-relaxed">{post.desc}</p>
+                  <span className="mt-5 pt-4 text-sm font-extrabold text-[#1d1d1f] inline-flex items-center gap-2">
+                    {post.cta}
+                    <ArrowRight className="w-4 h-4" />
+                  </span>
+                </div>
+              </button>
+            ))}
           </div>
         </div>
       </section>

@@ -1,10 +1,12 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  APILoadingStatus,
   APIProvider,
   AdvancedMarker,
   InfoWindow,
   Map as GoogleMap,
   useAdvancedMarkerRef,
+  useApiLoadingStatus,
   useMap,
 } from '@vis.gl/react-google-maps';
 import { Navigation, Plane, Truck, Home, Layers, WifiOff } from 'lucide-react';
@@ -12,7 +14,7 @@ import type { GeofenceZone, HistoricalWaypoint, LatLngPoint, Shipment } from '..
 
 interface MapViewportProps {
   shipment: Shipment;
-  activePosition?: LatLngPoint & { speedKmh?: number; headingDeg?: number; label?: string };
+  activePosition?: LatLngPoint & { speedKmh?: number; label?: string; headingDeg?: number };
   playbackIndex?: number;
   isOnline: boolean;
   quotaExceeded: boolean;
@@ -22,6 +24,66 @@ interface MapViewportProps {
 }
 
 const MAPS_API_KEY = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string | undefined) || '';
+const MAPS_MAP_ID = (import.meta.env.VITE_GOOGLE_MAPS_MAP_ID as string | undefined)?.trim() || 'DEMO_MAP_ID';
+const MAP_LIBRARIES: ('marker')[] = ['marker'];
+
+const ApiLoadingGuard: React.FC<{
+  onFailure: () => void;
+  fallback: React.ReactNode;
+  children: React.ReactNode;
+}> = ({ onFailure, fallback, children }) => {
+  const status = useApiLoadingStatus();
+  const onFailureRef = useRef(onFailure);
+  onFailureRef.current = onFailure;
+
+  useEffect(() => {
+    if (status === APILoadingStatus.FAILED || status === APILoadingStatus.AUTH_FAILURE) {
+      onFailureRef.current();
+    }
+  }, [status]);
+
+  if (status !== APILoadingStatus.LOADED) {
+    return <>{fallback}</>;
+  }
+
+  return <>{children}</>;
+};
+
+const MapCapabilityMarkers: React.FC<{
+  onMapIdUnavailable: () => void;
+  children: React.ReactNode;
+}> = ({ onMapIdUnavailable, children }) => {
+  const map = useMap();
+  const [advancedMarkersReady, setAdvancedMarkersReady] = useState(false);
+  const onUnavailableRef = useRef(onMapIdUnavailable);
+  onUnavailableRef.current = onMapIdUnavailable;
+
+  useEffect(() => {
+    if (!map || typeof google === 'undefined') return;
+    let disposed = false;
+
+    const syncCapabilities = () => {
+      if (disposed) return;
+      const caps = map.getMapCapabilities?.();
+      if (caps?.isAdvancedMarkersAvailable) {
+        setAdvancedMarkersReady(true);
+      } else {
+        setAdvancedMarkersReady(false);
+        onUnavailableRef.current();
+      }
+    };
+
+    const capListener = map.addListener('mapcapabilities_changed', syncCapabilities);
+
+    return () => {
+      disposed = true;
+      capListener.remove();
+    };
+  }, [map]);
+
+  if (!advancedMarkersReady) return null;
+  return <>{children}</>;
+};
 
 const RouteAndGeofenceOverlays: React.FC<{
   waypoints: HistoricalWaypoint[];
@@ -438,6 +500,13 @@ export const MapViewport: React.FC<MapViewportProps> = ({
   heightClass = 'h-[380px] lg:h-[520px]',
 }) => {
   const [preferOfflineVector, setPreferOfflineVector] = useState(false);
+  const [mapConfigUnavailable, setMapConfigUnavailable] = useState(false);
+  const handleMapUnavailable = useCallback(() => setMapConfigUnavailable(true), []);
+
+  useEffect(() => {
+    window.addEventListener('gmp-map-config-unavailable', handleMapUnavailable);
+    return () => window.removeEventListener('gmp-map-config-unavailable', handleMapUnavailable);
+  }, [handleMapUnavailable]);
 
   const pos = activePosition ?? {
     lat: shipment.current.lat,
@@ -447,72 +516,88 @@ export const MapViewport: React.FC<MapViewportProps> = ({
     label: shipment.current.location,
   };
 
-  const canUseGoogleMaps = isOnline && !quotaExceeded && Boolean(MAPS_API_KEY) && !preferOfflineVector;
+  const canUseGoogleMaps =
+    isOnline && !quotaExceeded && !mapConfigUnavailable && Boolean(MAPS_API_KEY) && !preferOfflineVector;
+
+  const vectorFallback = (
+    <OfflineVectorMap
+      shipment={shipment}
+      activePosition={pos}
+      showGeofences={showGeofences}
+      playbackIndex={playbackIndex}
+      reasonLabel={
+        !isOnline
+          ? 'Offline Vector Map · Cached Telemetry'
+          : preferOfflineVector
+            ? 'Tactical Vector Map View'
+            : mapConfigUnavailable
+              ? 'Tactical Vector Map · Cached Corridor'
+              : 'Loading Live Corridor Map...'
+      }
+      onMapClickAddGeofence={onMapClickAddGeofence}
+    />
+  );
 
   return (
     <div className={`relative w-full ${heightClass} border border-neutral-300 bg-neutral-100 overflow-hidden`}>
       {canUseGoogleMaps ? (
-        <APIProvider apiKey={MAPS_API_KEY} libraries={['marker']}>
-          <GoogleMap
-            mapId="DEMO_MAP_ID"
-            defaultCenter={pos}
-            defaultZoom={6}
-            gestureHandling="greedy"
-            disableDefaultUI={false}
-            internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
-            className="w-full h-full"
-          >
-            <RouteAndGeofenceOverlays
-              waypoints={shipment.routeWaypoints}
-              activePosition={pos}
-              geofences={shipment.geofences}
-              showGeofences={showGeofences}
-              isDeviation={shipment.status === 'Route Deviation'}
-              onMapClickAddGeofence={onMapClickAddGeofence}
-            />
+        <APIProvider
+          apiKey={MAPS_API_KEY}
+          libraries={MAP_LIBRARIES}
+          version="weekly"
+          onError={handleMapUnavailable}
+        >
+          <ApiLoadingGuard onFailure={handleMapUnavailable} fallback={vectorFallback}>
+            <GoogleMap
+              mapId={MAPS_MAP_ID}
+              defaultCenter={pos}
+              defaultZoom={6}
+              gestureHandling="greedy"
+              disableDefaultUI={false}
+              internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
+              className="w-full h-full"
+            >
+              <RouteAndGeofenceOverlays
+                waypoints={shipment.routeWaypoints}
+                activePosition={pos}
+                geofences={shipment.geofences}
+                showGeofences={showGeofences}
+                isDeviation={shipment.status === 'Route Deviation'}
+                onMapClickAddGeofence={onMapClickAddGeofence}
+              />
 
-            {/* Origin Pin */}
-            <AdvancedMarker position={shipment.origin} title={`Origin: ${shipment.origin.city}`}>
-              <div className="px-2 py-1 bg-[#1d1d1f] text-[#FFCC00] text-[11px] font-bold border border-white shadow">
-                ORIGIN · {shipment.origin.city.split(',')[0]}
-              </div>
-            </AdvancedMarker>
+              <MapCapabilityMarkers onMapIdUnavailable={handleMapUnavailable}>
+                {/* Origin Pin */}
+                <AdvancedMarker position={shipment.origin} title={`Origin: ${shipment.origin.city}`}>
+                  <div className="px-2 py-1 bg-[#1d1d1f] text-[#FFCC00] text-[11px] font-bold border border-white shadow">
+                    ORIGIN · {shipment.origin.city.split(',')[0]}
+                  </div>
+                </AdvancedMarker>
 
-            {/* Destination Pin */}
-            <AdvancedMarker position={shipment.dest} title={`Destination: ${shipment.dest.city}`}>
-              <div className="px-2 py-1 bg-[#00C853] text-white text-[11px] font-bold border border-white shadow">
-                DEST · {shipment.dest.city.split(',')[0]}
-              </div>
-            </AdvancedMarker>
+                {/* Destination Pin */}
+                <AdvancedMarker position={shipment.dest} title={`Destination: ${shipment.dest.city}`}>
+                  <div className="px-2 py-1 bg-[#00C853] text-white text-[11px] font-bold border border-white shadow">
+                    DEST · {shipment.dest.city.split(',')[0]}
+                  </div>
+                </AdvancedMarker>
 
-            {/* Active Courier / Playback Vehicle */}
-            <VehicleMarkerWithWindow
-              position={pos}
-              shipment={shipment}
-              speedKmh={pos.speedKmh}
-              label={pos.label}
-            />
-          </GoogleMap>
+                {/* Active Courier / Playback Vehicle */}
+                <VehicleMarkerWithWindow
+                  position={pos}
+                  shipment={shipment}
+                  speedKmh={pos.speedKmh}
+                  label={pos.label}
+                />
+              </MapCapabilityMarkers>
+            </GoogleMap>
+          </ApiLoadingGuard>
         </APIProvider>
       ) : (
-        <OfflineVectorMap
-          shipment={shipment}
-          activePosition={pos}
-          showGeofences={showGeofences}
-          playbackIndex={playbackIndex}
-          reasonLabel={
-            !isOnline
-              ? 'Offline Vector Map · Cached Telemetry'
-              : preferOfflineVector
-                ? 'Tactical Vector Map View'
-                : 'Cached Corridor Map · Live Telemetry'
-          }
-          onMapClickAddGeofence={onMapClickAddGeofence}
-        />
+        vectorFallback
       )}
 
       {/* Map View Switcher (when Google Maps is available) */}
-      {isOnline && !quotaExceeded && Boolean(MAPS_API_KEY) && (
+      {isOnline && !quotaExceeded && !mapConfigUnavailable && Boolean(MAPS_API_KEY) && (
         <button
           type="button"
           onClick={() => setPreferOfflineVector((v) => !v)}

@@ -93,6 +93,7 @@ export interface Shipment {
     name: string;
     city: string;
     address: string;
+    email?: string;
     phone?: string;
   };
   courier: {
@@ -120,6 +121,7 @@ export interface Shipment {
   routeWaypoints: HistoricalWaypoint[];
   geofences: GeofenceZone[];
   proofImage?: string;
+  parcelImages?: string[];
 }
 
 export interface PushAlert {

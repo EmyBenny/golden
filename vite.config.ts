@@ -47,7 +47,12 @@ export default defineConfig(() => {
         workbox: {
           globPatterns: ['**/*.{js,css,html,ico,png,svg,jpg,woff,woff2}'],
           navigateFallback: '/index.html',
+          navigateFallbackDenylist: [/^\/api\//],
           runtimeCaching: [
+            {
+              urlPattern: /^https:\/\/maps\.googleapis\.com\/.*/i,
+              handler: 'NetworkOnly',
+            },
             {
               urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
               handler: 'CacheFirst',

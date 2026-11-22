@@ -12,7 +12,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.NODE_ENV === 'production' && process.env.PORT ? Number(process.env.PORT) : 3000;
 
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '10mb' }));
 
 // In-memory state store synchronized with clients via REST + SSE
 let shipments: Shipment[] = structuredClone(SEED_SHIPMENTS);
@@ -314,6 +314,15 @@ app.post('/api/admin/shipments', (req, res) => {
   const status = String(body.status || 'Picked Up');
   const progress = Math.min(100, Math.max(0, Number(body.progress ?? 20)));
 
+  const parcelImages: string[] = Array.isArray(body.parcelImages)
+    ? body.parcelImages
+        .map((img: unknown) => String(img || '').trim())
+        .filter((img: string) => Boolean(img))
+        .slice(0, 6)
+    : [];
+  const primaryProof =
+    parcelImages[0] || (body.proofImage ? String(body.proofImage).trim() : undefined);
+
   const newShipment: Shipment = {
     tracking_no: trackingNo,
     receipt_no: receiptNo,
@@ -338,18 +347,19 @@ app.post('/api/admin/shipments', (req, res) => {
       name: senderName,
       city: originCity,
       address: String(body.senderAddress || `${originCity} Central Depot`),
-      email: body.senderEmail ? String(body.senderEmail) : undefined,
-      phone: body.senderPhone ? String(body.senderPhone) : undefined,
+      email: body.senderEmail ? String(body.senderEmail).trim() : undefined,
+      phone: body.senderPhone ? String(body.senderPhone).trim() : undefined,
     },
     receiver: {
       name: receiverName,
       city: destCity,
       address: String(body.receiverAddress || `${destCity} Delivery Point`),
-      phone: body.receiverPhone ? String(body.receiverPhone) : undefined,
+      email: body.receiverEmail ? String(body.receiverEmail).trim() : undefined,
+      phone: body.receiverPhone ? String(body.receiverPhone).trim() : undefined,
     },
     courier: {
       name: String(body.courierName || 'Richard Dheo'),
-      phone: String(body.courierPhone || '+44 7700 900789'),
+      phone: String(body.courierPhone || '+44 7700 900789').trim(),
       vehicle: String(body.courierVehicle || 'EV Sprinter · TP-402'),
     },
     pickup: new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }),
@@ -374,6 +384,8 @@ app.post('/api/admin/shipments', (req, res) => {
     },
     distance_km: Math.max(15, Math.round(distanceMeters({ lat: originLat, lng: originLng }, { lat: destLat, lng: destLng }) / 1000)),
     updated_at: nowStr,
+    proofImage: primaryProof,
+    parcelImages: parcelImages.length > 0 ? parcelImages : primaryProof ? [primaryProof] : undefined,
     events: [
       {
         status,
@@ -459,6 +471,13 @@ app.patch('/api/admin/shipments/:id', (req, res) => {
       }
     : current.payment;
 
+  const nextParcelImages: string[] | undefined = Array.isArray(body.parcelImages)
+    ? body.parcelImages
+        .map((img: unknown) => String(img || '').trim())
+        .filter((img: string) => Boolean(img))
+        .slice(0, 6)
+    : current.parcelImages;
+
   const updated: Shipment = {
     ...current,
     status: nextStatus,
@@ -473,11 +492,28 @@ app.patch('/api/admin/shipments/:id', (req, res) => {
       ...current.current,
       location: nextCurrentLocation,
     },
+    sender: {
+      ...current.sender,
+      email: body.senderEmail !== undefined ? String(body.senderEmail).trim() || undefined : current.sender.email,
+      phone: body.senderPhone !== undefined ? String(body.senderPhone).trim() || undefined : current.sender.phone,
+    },
+    receiver: {
+      ...current.receiver,
+      email: body.receiverEmail !== undefined ? String(body.receiverEmail).trim() || undefined : current.receiver.email,
+      phone: body.receiverPhone !== undefined ? String(body.receiverPhone).trim() || undefined : current.receiver.phone,
+    },
     courier: {
       name: body.courierName !== undefined ? String(body.courierName) : current.courier.name,
       phone: body.courierPhone !== undefined ? String(body.courierPhone) : current.courier.phone,
       vehicle: body.courierVehicle !== undefined ? String(body.courierVehicle) : current.courier.vehicle,
     },
+    proofImage:
+      nextParcelImages && nextParcelImages.length > 0
+        ? nextParcelImages[0]
+        : body.proofImage !== undefined
+        ? String(body.proofImage) || undefined
+        : current.proofImage,
+    parcelImages: nextParcelImages,
     payment: updatedPayment,
     events: updatedEvents,
   };

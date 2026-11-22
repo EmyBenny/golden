@@ -67,7 +67,7 @@ if (!self.define) {
     });
   };
 }
-define(['./workbox-5d155c7a'], (function (workbox) { 'use strict';
+define(['./workbox-5b5e5399'], (function (workbox) { 'use strict';
 
   self.skipWaiting();
   workbox.clientsClaim();
@@ -78,12 +78,14 @@ define(['./workbox-5d155c7a'], (function (workbox) { 'use strict';
    */
   workbox.precacheAndRoute([{
     "url": "/index.html",
-    "revision": "0.hj31aipt7r8"
+    "revision": "0.glv6euk8nf8"
   }], {});
   workbox.cleanupOutdatedCaches();
   workbox.registerRoute(new workbox.NavigationRoute(workbox.createHandlerBoundToURL("/index.html"), {
-    allowlist: [/^\/$/]
+    allowlist: [/^\/$/],
+    denylist: [/^\/api\//]
   }));
+  workbox.registerRoute(/^https:\/\/maps\.googleapis\.com\/.*/i, new workbox.NetworkOnly(), 'GET');
   workbox.registerRoute(/^https:\/\/fonts\.googleapis\.com\/.*/i, new workbox.CacheFirst({
     "cacheName": "google-fonts-cache",
     plugins: [new workbox.ExpirationPlugin({
@@ -103,7 +105,7 @@ define(['./workbox-5d155c7a'], (function (workbox) { 'use strict';
     })]
   }), 'GET');
   workbox.registerRoute(/\/api\/shipments.*/i, new workbox.NetworkFirst({
-    "cacheName": "trackpro-api-cache",
+    "cacheName": "golden-courier-api-cache",
     "networkTimeoutSeconds": 4,
     plugins: [new workbox.ExpirationPlugin({
       maxEntries: 50,

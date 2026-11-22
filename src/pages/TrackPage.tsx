@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import {
   BellRing,
+  Camera,
   Copy,
+  Mail,
   MapPin,
   MessageSquare,
   Package,
@@ -44,6 +46,7 @@ export const TrackPage: React.FC<TrackPageProps> = ({
   const [detailTab, setDetailTab] = useState<ParcelDetailTab>('overview');
   const [copiedShare, setCopiedShare] = useState(false);
   const [courierChatOpen, setCourierChatOpen] = useState(false);
+  const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [chatMessage, setChatMessage] = useState('');
   const [chatLog, setChatLog] = useState<
     Array<{ from: 'user' | 'courier'; text: string; time: string }>
@@ -107,6 +110,15 @@ export const TrackPage: React.FC<TrackPageProps> = ({
     : 0;
   const shipmentAlerts = shipment
     ? alerts.filter((a) => a.trackingNo === shipment.tracking_no)
+    : [];
+  const parcelPhotos = shipment
+    ? Array.from(
+        new Set(
+          [...(shipment.parcelImages || []), ...(shipment.proofImage ? [shipment.proofImage] : [])].filter(
+            Boolean
+          )
+        )
+      )
     : [];
 
   return (
@@ -280,6 +292,9 @@ export const TrackPage: React.FC<TrackPageProps> = ({
               <div>
                 <p className="text-sm font-extrabold text-[#1d1d1f]">{shipment.courier.name}</p>
                 <p className="text-xs text-[#6b6b70]">{shipment.courier.vehicle}</p>
+                <p className="text-[11px] font-mono-tabular text-[#6b6b70] mt-0.5">
+                  {shipment.courier.phone}
+                </p>
               </div>
             </div>
             <div className="flex items-center gap-2">
@@ -468,17 +483,31 @@ export const TrackPage: React.FC<TrackPageProps> = ({
                     </ol>
                   </div>
 
-                  {shipment.proofImage && (
+                  {parcelPhotos.length > 0 && (
                     <div className="pt-3 border-t border-neutral-200">
-                      <p className="text-xs font-bold text-[#6b6b70] mb-2">
-                        Photo proof & label inspection
+                      <p className="text-xs font-bold text-[#6b6b70] mb-2 flex items-center gap-1.5">
+                        <Camera className="w-3.5 h-3.5 text-[#1d1d1f]" />
+                        <span>
+                          Parcel pictures &amp; label inspection ({parcelPhotos.length})
+                        </span>
                       </p>
-                      <img
-                        src={shipment.proofImage}
-                        alt={`Delivery proof for ${shipment.tracking_no}`}
-                        referrerPolicy="no-referrer"
-                        className="w-full h-44 object-cover border border-neutral-200"
-                      />
+                      <div className="grid grid-cols-2 gap-2.5">
+                        {parcelPhotos.map((imgSrc, idx) => (
+                          <button
+                            key={`${idx}-${imgSrc.slice(0, 24)}`}
+                            type="button"
+                            onClick={() => setLightboxImage(imgSrc)}
+                            className="text-left border border-neutral-200 hover:border-[#1d1d1f] transition-colors cursor-pointer overflow-hidden bg-[#f2f2f2]"
+                          >
+                            <img
+                              src={imgSrc}
+                              alt={`Parcel photo ${idx + 1} for ${shipment.tracking_no}`}
+                              referrerPolicy="no-referrer"
+                              className="w-full h-36 object-cover"
+                            />
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   )}
                 </div>
@@ -487,26 +516,62 @@ export const TrackPage: React.FC<TrackPageProps> = ({
               {/* TAB 2: DISPATCH / SHIPPING DETAILS */}
               {detailTab === 'dispatch' && (
                 <div className="space-y-4 text-xs">
-                  <div className="grid grid-cols-2 gap-4 p-4 bg-[#f2f2f2]">
-                    <div>
-                      <span className="text-[#6b6b70] font-bold uppercase block mb-1">
+                  <div className="grid sm:grid-cols-2 gap-4 p-4 bg-[#f2f2f2]">
+                    <div className="space-y-1">
+                      <span className="text-[#6b6b70] font-bold uppercase block">
                         Sender (Origin)
                       </span>
                       <p className="font-extrabold text-sm text-[#1d1d1f]">
                         {shipment.sender.name}
                       </p>
-                      <p className="text-[#6b6b70] mt-0.5">{shipment.sender.address}</p>
+                      <p className="text-[#6b6b70]">{shipment.sender.address}</p>
                       <p className="text-[#6b6b70]">{shipment.sender.city}</p>
+                      {shipment.sender.email && (
+                        <a
+                          href={`mailto:${shipment.sender.email}`}
+                          className="inline-flex items-center gap-1.5 text-[#1B6CFF] hover:underline pt-1"
+                        >
+                          <Mail className="w-3.5 h-3.5 shrink-0" />
+                          <span>{shipment.sender.email}</span>
+                        </a>
+                      )}
+                      {shipment.sender.phone && (
+                        <a
+                          href={`tel:${shipment.sender.phone}`}
+                          className="flex items-center gap-1.5 font-mono-tabular text-[#1d1d1f] hover:underline"
+                        >
+                          <Phone className="w-3.5 h-3.5 shrink-0 text-[#6b6b70]" />
+                          <span>{shipment.sender.phone}</span>
+                        </a>
+                      )}
                     </div>
-                    <div>
-                      <span className="text-[#6b6b70] font-bold uppercase block mb-1">
+                    <div className="space-y-1">
+                      <span className="text-[#6b6b70] font-bold uppercase block">
                         Receiver (Destination)
                       </span>
                       <p className="font-extrabold text-sm text-[#1d1d1f]">
                         {shipment.receiver.name}
                       </p>
-                      <p className="text-[#6b6b70] mt-0.5">{shipment.receiver.address}</p>
+                      <p className="text-[#6b6b70]">{shipment.receiver.address}</p>
                       <p className="text-[#6b6b70]">{shipment.receiver.city}</p>
+                      {shipment.receiver.email && (
+                        <a
+                          href={`mailto:${shipment.receiver.email}`}
+                          className="inline-flex items-center gap-1.5 text-[#1B6CFF] hover:underline pt-1"
+                        >
+                          <Mail className="w-3.5 h-3.5 shrink-0" />
+                          <span>{shipment.receiver.email}</span>
+                        </a>
+                      )}
+                      {shipment.receiver.phone && (
+                        <a
+                          href={`tel:${shipment.receiver.phone}`}
+                          className="flex items-center gap-1.5 font-mono-tabular text-[#1d1d1f] hover:underline"
+                        >
+                          <Phone className="w-3.5 h-3.5 shrink-0 text-[#6b6b70]" />
+                          <span>{shipment.receiver.phone}</span>
+                        </a>
+                      )}
                     </div>
                   </div>
 
@@ -536,6 +601,32 @@ export const TrackPage: React.FC<TrackPageProps> = ({
                       <span className="font-bold">{shipment.company}</span>
                     </div>
                   </div>
+
+                  {parcelPhotos.length > 0 && (
+                    <div className="border border-neutral-200 p-4 space-y-2.5">
+                      <span className="font-extrabold text-[#1d1d1f] flex items-center gap-1.5">
+                        <Camera className="w-3.5 h-3.5" />
+                        <span>Attached Parcel Pictures ({parcelPhotos.length})</span>
+                      </span>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                        {parcelPhotos.map((imgSrc, idx) => (
+                          <button
+                            key={`disp-${idx}-${imgSrc.slice(0, 20)}`}
+                            type="button"
+                            onClick={() => setLightboxImage(imgSrc)}
+                            className="border border-neutral-200 hover:border-[#1d1d1f] cursor-pointer overflow-hidden"
+                          >
+                            <img
+                              src={imgSrc}
+                              alt={`Dispatch parcel ${idx + 1}`}
+                              referrerPolicy="no-referrer"
+                              className="w-full h-28 object-cover"
+                            />
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -631,6 +722,33 @@ export const TrackPage: React.FC<TrackPageProps> = ({
                 Send
               </button>
             </form>
+          </div>
+        </div>
+      )}
+      {/* Lightbox for Parcel Photos */}
+      {lightboxImage && (
+        <div
+          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
+          onClick={() => setLightboxImage(null)}
+        >
+          <div
+            className="relative max-w-3xl w-full bg-white border-2 border-[#1d1d1f] p-2"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={() => setLightboxImage(null)}
+              aria-label="Close photo preview"
+              className="absolute top-3 right-3 w-9 h-9 bg-[#1d1d1f] text-[#FFCC00] flex items-center justify-center cursor-pointer z-10"
+            >
+              <X className="w-5 h-5" />
+            </button>
+            <img
+              src={lightboxImage}
+              alt="Full-size parcel inspection"
+              referrerPolicy="no-referrer"
+              className="w-full max-h-[80vh] object-contain bg-[#111]"
+            />
           </div>
         </div>
       )}

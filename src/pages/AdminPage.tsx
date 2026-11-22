@@ -3,15 +3,19 @@ import {
   ArrowUpRight,
   BellRing,
   Building2,
+  Camera,
   CheckCircle2,
   Download,
   FileSpreadsheet,
+  ImagePlus,
   Inbox,
   LayoutDashboard,
   LineChart,
+  Mail,
   Navigation,
   Package,
   Pencil,
+  Phone,
   Plus,
   QrCode,
   Radar,
@@ -136,9 +140,48 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   const [returnRequests, setReturnRequests] = useState<ReturnRequest[]>([]);
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
 
+  const SAMPLE_PARCEL_PRESETS = [
+    { label: 'Sealed Parcel Box', url: '/src/assets/images/golden_courier_parcels_1795375425863.jpg' },
+    { label: 'Doorstep Handover', url: '/src/assets/images/golden_courier_driver_1795375426210.jpg' },
+    { label: 'Boots Proof Photo', url: '/src/assets/images/parcel_proof_boots_1795252245449.jpg' },
+  ];
+
+  const compressImageFile = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = typeof reader.result === 'string' ? reader.result : '';
+        if (!result) {
+          reject(new Error('Empty file'));
+          return;
+        }
+        const img = new Image();
+        img.onload = () => {
+          const maxDim = 960;
+          const scale = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(img.width * scale));
+          canvas.height = Math.max(1, Math.round(img.height * scale));
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(result);
+            return;
+          }
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          resolve(canvas.toDataURL('image/jpeg', 0.78));
+        };
+        img.onerror = () => resolve(result);
+        img.src = result;
+      };
+      reader.onerror = () => reject(new Error('Failed to read image'));
+      reader.readAsDataURL(file);
+    });
+
   // Create Shipment Modal state
   const [createOpen, setCreateOpen] = useState(false);
   const [previewReceiptShipment, setPreviewReceiptShipment] = useState<Shipment | null>(null);
+  const [imageUrlInput, setImageUrlInput] = useState('');
+  const [editImageUrlInput, setEditImageUrlInput] = useState('');
   const [newForm, setNewForm] = useState({
     trackingNo: '',
     originCity: 'London, UK',
@@ -148,14 +191,20 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     destLat: '55.9533',
     destLng: '-3.1883',
     senderName: 'Golden Courier Dispatch',
+    senderEmail: 'dispatch@goldencourier.demo',
+    senderPhone: '+44 20 7946 0180',
     receiverName: 'Claire Thornton',
+    receiverEmail: 'claire.thornton@example.com',
+    receiverPhone: '+44 7700 900412',
     courierName: 'Richard Dheo',
+    courierPhone: '+44 7700 900789',
     courierVehicle: 'EV Sprinter · TP-402',
     service: 'Express' as Shipment['service'],
     packageDesc: 'Electronics & calibration kit',
     weightKg: '3.2',
     totalFee: '34.50',
     eta: 'Tomorrow, 15:00',
+    parcelImages: [] as string[],
   });
 
   // Edit Shipment & Scan Checkpoint Drawer
@@ -165,10 +214,16 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     progress: 60,
     currentLocation: '',
     eta: '',
+    senderEmail: '',
+    senderPhone: '',
+    receiverEmail: '',
+    receiverPhone: '',
     courierName: '',
+    courierPhone: '',
     courierVehicle: '',
     paymentState: 'Paid' as Shipment['payment']['state'],
     scanNote: '',
+    parcelImages: [] as string[],
   });
 
   // Live GPS & Geofence Admin controls
@@ -251,17 +306,68 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   }, [activeShipment?.tracking_no, activeShipment?.current.lat, activeShipment?.current.lng]);
 
   const openEditor = (s: Shipment) => {
+    const existingImages = Array.from(
+      new Set([
+        ...(s.parcelImages || []),
+        ...(s.proofImage ? [s.proofImage] : []),
+      ].filter(Boolean))
+    );
     setEditingTrackingNo(s.tracking_no);
+    setEditImageUrlInput('');
     setEditDraft({
       status: s.status,
       progress: s.progress,
       currentLocation: s.current.location,
       eta: s.eta,
+      senderEmail: s.sender.email || '',
+      senderPhone: s.sender.phone || '',
+      receiverEmail: s.receiver.email || '',
+      receiverPhone: s.receiver.phone || '',
       courierName: s.courier.name,
+      courierPhone: s.courier.phone,
       courierVehicle: s.courier.vehicle,
       paymentState: s.payment.state,
       scanNote: '',
+      parcelImages: existingImages,
     });
+  };
+
+  const handleUploadNewImages = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const chosen = Array.from(files).slice(0, Math.max(0, 6 - newForm.parcelImages.length));
+    if (chosen.length === 0) {
+      showToast('Maximum of 6 parcel pictures reached.');
+      return;
+    }
+    try {
+      const encoded = await Promise.all(chosen.map((f) => compressImageFile(f)));
+      setNewForm((f) => ({
+        ...f,
+        parcelImages: [...f.parcelImages, ...encoded].slice(0, 6),
+      }));
+      showToast(`Attached ${encoded.length} parcel picture${encoded.length > 1 ? 's' : ''}`);
+    } catch {
+      showToast('Could not read selected image file.');
+    }
+  };
+
+  const handleUploadEditImages = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const chosen = Array.from(files).slice(0, Math.max(0, 6 - editDraft.parcelImages.length));
+    if (chosen.length === 0) {
+      showToast('Maximum of 6 parcel pictures reached.');
+      return;
+    }
+    try {
+      const encoded = await Promise.all(chosen.map((f) => compressImageFile(f)));
+      setEditDraft((d) => ({
+        ...d,
+        parcelImages: [...d.parcelImages, ...encoded].slice(0, 6),
+      }));
+      showToast(`Attached ${encoded.length} parcel picture${encoded.length > 1 ? 's' : ''}`);
+    } catch {
+      showToast('Could not read selected image file.');
+    }
   };
 
   const handleSaveEdit = async (e: React.FormEvent) => {
@@ -272,10 +378,17 @@ export const AdminPage: React.FC<AdminPageProps> = ({
       progress: Number(editDraft.progress),
       currentLocation: editDraft.currentLocation,
       eta: editDraft.eta,
+      senderEmail: editDraft.senderEmail.trim(),
+      senderPhone: editDraft.senderPhone.trim(),
+      receiverEmail: editDraft.receiverEmail.trim(),
+      receiverPhone: editDraft.receiverPhone.trim(),
       courierName: editDraft.courierName,
+      courierPhone: editDraft.courierPhone,
       courierVehicle: editDraft.courierVehicle,
       paymentState: editDraft.paymentState,
       eventNote: editDraft.scanNote.trim() || undefined,
+      parcelImages: editDraft.parcelImages,
+      proofImage: editDraft.parcelImages[0] || '',
     };
 
     if (isOnline) {
@@ -308,11 +421,24 @@ export const AdminPage: React.FC<AdminPageProps> = ({
               progress: Number(editDraft.progress),
               eta: editDraft.eta,
               current: { ...s.current, location: editDraft.currentLocation },
+              sender: {
+                ...s.sender,
+                email: editDraft.senderEmail.trim() || undefined,
+                phone: editDraft.senderPhone.trim() || undefined,
+              },
+              receiver: {
+                ...s.receiver,
+                email: editDraft.receiverEmail.trim() || undefined,
+                phone: editDraft.receiverPhone.trim() || undefined,
+              },
               courier: {
                 ...s.courier,
                 name: editDraft.courierName,
+                phone: editDraft.courierPhone,
                 vehicle: editDraft.courierVehicle,
               },
+              proofImage: editDraft.parcelImages[0] || undefined,
+              parcelImages: editDraft.parcelImages.length > 0 ? editDraft.parcelImages : undefined,
               payment: { ...s.payment, state: editDraft.paymentState },
             }
           : s
@@ -333,14 +459,21 @@ export const AdminPage: React.FC<AdminPageProps> = ({
       destLat: Number(newForm.destLat) || 53.4808,
       destLng: Number(newForm.destLng) || -2.2426,
       senderName: newForm.senderName.trim(),
+      senderEmail: newForm.senderEmail.trim() || undefined,
+      senderPhone: newForm.senderPhone.trim() || undefined,
       receiverName: newForm.receiverName.trim(),
+      receiverEmail: newForm.receiverEmail.trim() || undefined,
+      receiverPhone: newForm.receiverPhone.trim() || undefined,
       courierName: newForm.courierName.trim(),
+      courierPhone: newForm.courierPhone.trim() || '+44 7700 900789',
       courierVehicle: newForm.courierVehicle.trim(),
       service: newForm.service,
       packageDesc: newForm.packageDesc.trim(),
       weightKg: Number(newForm.weightKg) || 2.0,
       totalFee: Number(newForm.totalFee) || 24.99,
       eta: newForm.eta.trim(),
+      parcelImages: newForm.parcelImages,
+      proofImage: newForm.parcelImages[0] || undefined,
     };
 
     if (isOnline) {
@@ -356,7 +489,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({
           if (data.alert) onTriggerAlert(data.alert);
           onSelectTracking(data.shipment.tracking_no);
           setCreateOpen(false);
-          setNewForm((f) => ({ ...f, trackingNo: '' }));
+          setNewForm((f) => ({ ...f, trackingNo: '', parcelImages: [] }));
+          setImageUrlInput('');
           showToast(`Dispatched shipment ${data.shipment.tracking_no}`);
           return;
         } else {
@@ -390,11 +524,29 @@ export const AdminPage: React.FC<AdminPageProps> = ({
         speedKmh: 0,
         headingDeg: 0,
       },
-      sender: { name: payload.senderName, city: payload.originCity, address: payload.originCity },
-      receiver: { name: payload.receiverName, city: payload.destCity, address: payload.destCity },
-      courier: { name: payload.courierName, phone: '+44 7700 900789', vehicle: payload.courierVehicle },
+      sender: {
+        name: payload.senderName,
+        city: payload.originCity,
+        address: payload.originCity,
+        email: payload.senderEmail,
+        phone: payload.senderPhone,
+      },
+      receiver: {
+        name: payload.receiverName,
+        city: payload.destCity,
+        address: payload.destCity,
+        email: payload.receiverEmail,
+        phone: payload.receiverPhone,
+      },
+      courier: {
+        name: payload.courierName,
+        phone: payload.courierPhone,
+        vehicle: payload.courierVehicle,
+      },
       pickup: 'Today',
       eta: payload.eta,
+      proofImage: payload.parcelImages[0] || undefined,
+      parcelImages: payload.parcelImages.length > 0 ? payload.parcelImages : undefined,
       payment: {
         state: 'Paid',
         total: `£${payload.totalFee.toFixed(2)}`,
@@ -432,6 +584,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     onAdminShipmentsChange([localShipment, ...shipments]);
     onSelectTracking(trackingNo);
     setCreateOpen(false);
+    setNewForm((f) => ({ ...f, trackingNo: '', parcelImages: [] }));
+    setImageUrlInput('');
     showToast(`Dispatched ${trackingNo} offline`);
   };
 
@@ -1103,11 +1257,26 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                             <span className="font-bold block">
                               {s.origin.city.split(',')[0]} → {s.dest.city.split(',')[0]}
                             </span>
-                            <span className="text-[11px] text-[#6b6b70]">{s.receiver.name}</span>
+                            <span className="text-[11px] text-[#6b6b70] block">{s.receiver.name}</span>
+                            {(s.receiver.phone || s.receiver.email) && (
+                              <span className="text-[10px] font-mono-tabular text-neutral-500 block">
+                                {[s.receiver.phone, s.receiver.email].filter(Boolean).join(' · ')}
+                              </span>
+                            )}
+                            {(s.parcelImages?.length || s.proofImage) && (
+                              <span className="text-[10px] font-bold text-[#1B6CFF] inline-flex items-center gap-1 mt-0.5">
+                                <Camera className="w-3 h-3" />
+                                <span>
+                                  {Math.max(s.parcelImages?.length ?? 0, s.proofImage ? 1 : 0)} parcel photo
+                                  {Math.max(s.parcelImages?.length ?? 0, s.proofImage ? 1 : 0) > 1 ? 's' : ''}
+                                </span>
+                              </span>
+                            )}
                           </td>
                           <td className="py-2.5 px-3">
                             <span className="block font-medium">{s.courier.name}</span>
-                            <span className="text-[10px] text-[#6b6b70]">{s.courier.vehicle}</span>
+                            <span className="text-[10px] text-[#6b6b70] block">{s.courier.vehicle}</span>
+                            <span className="text-[10px] font-mono-tabular text-neutral-500">{s.courier.phone}</span>
                           </td>
                           <td className="py-2.5 px-3">
                             <span
@@ -1978,10 +2147,15 @@ export const AdminPage: React.FC<AdminPageProps> = ({
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
           <form
             onSubmit={handleCreateShipment}
-            className="bg-white border-2 border-[#1d1d1f] shadow-[8px_8px_0_#1d1d1f] w-full max-w-2xl max-h-[90vh] overflow-y-auto p-6 space-y-4"
+            className="bg-white border-2 border-[#1d1d1f] shadow-[8px_8px_0_#1d1d1f] w-full max-w-3xl max-h-[92vh] overflow-y-auto p-6 space-y-5"
           >
             <div className="flex items-center justify-between pb-3 border-b border-neutral-200">
-              <h2 className="font-display text-xl text-[#1d1d1f]">Dispatch New Shipment</h2>
+              <div>
+                <h2 className="font-display text-xl text-[#1d1d1f]">Dispatch New Shipment</h2>
+                <p className="text-xs text-[#6b6b70] mt-0.5">
+                  Add route, sender &amp; receiver emails, phone numbers, and parcel inspection pictures.
+                </p>
+              </div>
               <button
                 type="button"
                 onClick={() => setCreateOpen(false)}
@@ -2038,23 +2212,100 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                   className="w-full border border-neutral-300 px-3 py-2"
                 />
               </div>
-              <div>
-                <label className="block font-bold mb-1">Sender Name</label>
-                <input
-                  type="text"
-                  value={newForm.senderName}
-                  onChange={(e) => setNewForm((f) => ({ ...f, senderName: e.target.value }))}
-                  className="w-full border border-neutral-300 px-3 py-2"
-                />
+
+              {/* Sender Contact Block */}
+              <div className="sm:col-span-2 pt-2 border-t border-neutral-200">
+                <p className="font-extrabold uppercase tracking-wider text-[11px] text-[#6b6b70]">
+                  Sender Contact Details
+                </p>
               </div>
-              <div>
-                <label className="block font-bold mb-1">Receiver Name</label>
-                <input
-                  type="text"
-                  value={newForm.receiverName}
-                  onChange={(e) => setNewForm((f) => ({ ...f, receiverName: e.target.value }))}
-                  className="w-full border border-neutral-300 px-3 py-2"
-                />
+              <div className="sm:col-span-2 grid sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block font-bold mb-1">Sender Name</label>
+                  <input
+                    type="text"
+                    value={newForm.senderName}
+                    onChange={(e) => setNewForm((f) => ({ ...f, senderName: e.target.value }))}
+                    className="w-full border border-neutral-300 px-3 py-2"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold mb-1">Sender Email</label>
+                  <div className="relative">
+                    <Mail className="w-3.5 h-3.5 text-[#6b6b70] absolute left-2.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="email"
+                      placeholder="sender@domain.com"
+                      value={newForm.senderEmail}
+                      onChange={(e) => setNewForm((f) => ({ ...f, senderEmail: e.target.value }))}
+                      className="w-full border border-neutral-300 pl-8 pr-3 py-2"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block font-bold mb-1">Sender Phone</label>
+                  <div className="relative">
+                    <Phone className="w-3.5 h-3.5 text-[#6b6b70] absolute left-2.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="tel"
+                      placeholder="+44 7700 900123"
+                      value={newForm.senderPhone}
+                      onChange={(e) => setNewForm((f) => ({ ...f, senderPhone: e.target.value }))}
+                      className="w-full border border-neutral-300 pl-8 pr-3 py-2 font-mono-tabular"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Receiver Contact Block */}
+              <div className="sm:col-span-2 pt-2 border-t border-neutral-200">
+                <p className="font-extrabold uppercase tracking-wider text-[11px] text-[#6b6b70]">
+                  Receiver Contact Details
+                </p>
+              </div>
+              <div className="sm:col-span-2 grid sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block font-bold mb-1">Receiver Name</label>
+                  <input
+                    type="text"
+                    value={newForm.receiverName}
+                    onChange={(e) => setNewForm((f) => ({ ...f, receiverName: e.target.value }))}
+                    className="w-full border border-neutral-300 px-3 py-2"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold mb-1">Receiver Email</label>
+                  <div className="relative">
+                    <Mail className="w-3.5 h-3.5 text-[#6b6b70] absolute left-2.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="email"
+                      placeholder="recipient@domain.com"
+                      value={newForm.receiverEmail}
+                      onChange={(e) => setNewForm((f) => ({ ...f, receiverEmail: e.target.value }))}
+                      className="w-full border border-neutral-300 pl-8 pr-3 py-2"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block font-bold mb-1">Receiver Phone</label>
+                  <div className="relative">
+                    <Phone className="w-3.5 h-3.5 text-[#6b6b70] absolute left-2.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="tel"
+                      placeholder="+44 7700 900456"
+                      value={newForm.receiverPhone}
+                      onChange={(e) => setNewForm((f) => ({ ...f, receiverPhone: e.target.value }))}
+                      className="w-full border border-neutral-300 pl-8 pr-3 py-2 font-mono-tabular"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Courier & Package Block */}
+              <div className="sm:col-span-2 pt-2 border-t border-neutral-200">
+                <p className="font-extrabold uppercase tracking-wider text-[11px] text-[#6b6b70]">
+                  Courier &amp; Parcel Details
+                </p>
               </div>
               <div>
                 <label className="block font-bold mb-1">Courier Name</label>
@@ -2064,6 +2315,19 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                   onChange={(e) => setNewForm((f) => ({ ...f, courierName: e.target.value }))}
                   className="w-full border border-neutral-300 px-3 py-2"
                 />
+              </div>
+              <div>
+                <label className="block font-bold mb-1">Courier Phone</label>
+                <div className="relative">
+                  <Phone className="w-3.5 h-3.5 text-[#6b6b70] absolute left-2.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="tel"
+                    placeholder="+44 7700 900789"
+                    value={newForm.courierPhone}
+                    onChange={(e) => setNewForm((f) => ({ ...f, courierPhone: e.target.value }))}
+                    className="w-full border border-neutral-300 pl-8 pr-3 py-2 font-mono-tabular"
+                  />
+                </div>
               </div>
               <div>
                 <label className="block font-bold mb-1">Vehicle ID</label>
@@ -2084,6 +2348,16 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                 />
               </div>
               <div>
+                <label className="block font-bold mb-1">Weight (kg)</label>
+                <input
+                  type="number"
+                  step="0.1"
+                  value={newForm.weightKg}
+                  onChange={(e) => setNewForm((f) => ({ ...f, weightKg: e.target.value }))}
+                  className="w-full border border-neutral-300 px-3 py-2 font-mono-tabular"
+                />
+              </div>
+              <div>
                 <label className="block font-bold mb-1">Total Fee (£)</label>
                 <input
                   type="number"
@@ -2093,9 +2367,114 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                   className="w-full border border-neutral-300 px-3 py-2 font-mono-tabular"
                 />
               </div>
+
+              {/* Parcel Pictures Upload Block */}
+              <div className="sm:col-span-2 pt-2 border-t border-neutral-200 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="font-extrabold uppercase tracking-wider text-[11px] text-[#1d1d1f] flex items-center gap-1.5">
+                    <Camera className="w-3.5 h-3.5" />
+                    <span>Parcel Pictures &amp; Inspection Media ({newForm.parcelImages.length}/6)</span>
+                  </label>
+                  <span className="text-[11px] text-[#6b6b70]">
+                    Visible only to visitors tracking this parcel code
+                  </span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="inline-flex items-center gap-2 px-4 py-2 bg-[#FFCC00] border border-[#1d1d1f] text-[#1d1d1f] font-extrabold cursor-pointer hover:bg-[#1d1d1f] hover:text-[#FFCC00] transition-colors">
+                    <ImagePlus className="w-4 h-4" />
+                    <span>Upload Parcel Pictures</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      onChange={(e) => {
+                        handleUploadNewImages(e.target.files);
+                        e.target.value = '';
+                      }}
+                      className="sr-only"
+                    />
+                  </label>
+
+                  {SAMPLE_PARCEL_PRESETS.map((preset) => (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      onClick={() =>
+                        setNewForm((f) =>
+                          f.parcelImages.includes(preset.url) || f.parcelImages.length >= 6
+                            ? f
+                            : { ...f, parcelImages: [...f.parcelImages, preset.url] }
+                        )
+                      }
+                      className="px-3 py-2 border border-neutral-300 bg-[#f2f2f2] hover:border-[#1d1d1f] text-[11px] font-bold cursor-pointer"
+                    >
+                      + {preset.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex gap-2">
+                  <input
+                    type="url"
+                    placeholder="Or paste an image URL (https://... or /src/assets/...)"
+                    value={imageUrlInput}
+                    onChange={(e) => setImageUrlInput(e.target.value)}
+                    className="flex-1 border border-neutral-300 px-3 py-2 text-xs"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const trimmed = imageUrlInput.trim();
+                      if (!trimmed || newForm.parcelImages.length >= 6) return;
+                      setNewForm((f) => ({
+                        ...f,
+                        parcelImages: [...f.parcelImages, trimmed],
+                      }));
+                      setImageUrlInput('');
+                    }}
+                    className="px-3.5 py-2 bg-[#1d1d1f] text-[#FFCC00] font-bold text-xs cursor-pointer"
+                  >
+                    Attach URL
+                  </button>
+                </div>
+
+                {newForm.parcelImages.length > 0 && (
+                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-2.5 pt-1">
+                    {newForm.parcelImages.map((imgSrc, idx) => (
+                      <div key={`${idx}-${imgSrc.slice(0, 24)}`} className="relative border border-neutral-300 bg-[#f2f2f2] group">
+                        <img
+                          src={imgSrc}
+                          alt={`Attached parcel ${idx + 1}`}
+                          referrerPolicy="no-referrer"
+                          className="w-full h-24 object-cover"
+                        />
+                        {idx === 0 && (
+                          <span className="absolute left-1 bottom-1 px-1.5 py-0.5 bg-[#1d1d1f] text-[#FFCC00] text-[10px] font-bold">
+                            Primary
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setNewForm((f) => ({
+                              ...f,
+                              parcelImages: f.parcelImages.filter((_, i) => i !== idx),
+                            }))
+                          }
+                          aria-label={`Remove parcel picture ${idx + 1}`}
+                          className="absolute top-1 right-1 w-6 h-6 bg-[#1d1d1f] text-white flex items-center justify-center hover:bg-red-600 cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
-            <div className="flex justify-end gap-3 pt-2">
+            <div className="flex justify-end gap-3 pt-2 border-t border-neutral-200">
               <button
                 type="button"
                 onClick={() => setCreateOpen(false)}
@@ -2107,7 +2486,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                 type="submit"
                 className="px-6 py-2.5 bg-[#1d1d1f] text-[#FFCC00] text-xs font-extrabold cursor-pointer"
               >
-                Create & Arm Geofences
+                Create &amp; Arm Geofences
               </button>
             </div>
           </form>
@@ -2119,7 +2498,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
           <form
             onSubmit={handleSaveEdit}
-            className="bg-white border-2 border-[#1d1d1f] shadow-[8px_8px_0_#1d1d1f] w-full max-w-xl max-h-[90vh] overflow-y-auto p-6 space-y-4"
+            className="bg-white border-2 border-[#1d1d1f] shadow-[8px_8px_0_#1d1d1f] w-full max-w-2xl max-h-[92vh] overflow-y-auto p-6 space-y-4"
           >
             <div className="flex items-center justify-between pb-3 border-b border-neutral-200">
               <h2 className="font-display text-xl text-[#1d1d1f]">
@@ -2184,12 +2563,57 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                 />
               </div>
               <div>
+                <label className="block font-bold mb-1">Sender Email</label>
+                <input
+                  type="email"
+                  value={editDraft.senderEmail}
+                  onChange={(e) => setEditDraft((d) => ({ ...d, senderEmail: e.target.value }))}
+                  className="w-full border border-neutral-300 px-3 py-2"
+                />
+              </div>
+              <div>
+                <label className="block font-bold mb-1">Sender Phone</label>
+                <input
+                  type="tel"
+                  value={editDraft.senderPhone}
+                  onChange={(e) => setEditDraft((d) => ({ ...d, senderPhone: e.target.value }))}
+                  className="w-full border border-neutral-300 px-3 py-2 font-mono-tabular"
+                />
+              </div>
+              <div>
+                <label className="block font-bold mb-1">Receiver Email</label>
+                <input
+                  type="email"
+                  value={editDraft.receiverEmail}
+                  onChange={(e) => setEditDraft((d) => ({ ...d, receiverEmail: e.target.value }))}
+                  className="w-full border border-neutral-300 px-3 py-2"
+                />
+              </div>
+              <div>
+                <label className="block font-bold mb-1">Receiver Phone</label>
+                <input
+                  type="tel"
+                  value={editDraft.receiverPhone}
+                  onChange={(e) => setEditDraft((d) => ({ ...d, receiverPhone: e.target.value }))}
+                  className="w-full border border-neutral-300 px-3 py-2 font-mono-tabular"
+                />
+              </div>
+              <div>
                 <label className="block font-bold mb-1">Courier Name</label>
                 <input
                   type="text"
                   value={editDraft.courierName}
                   onChange={(e) => setEditDraft((d) => ({ ...d, courierName: e.target.value }))}
                   className="w-full border border-neutral-300 px-3 py-2"
+                />
+              </div>
+              <div>
+                <label className="block font-bold mb-1">Courier Phone</label>
+                <input
+                  type="tel"
+                  value={editDraft.courierPhone}
+                  onChange={(e) => setEditDraft((d) => ({ ...d, courierPhone: e.target.value }))}
+                  className="w-full border border-neutral-300 px-3 py-2 font-mono-tabular"
                 />
               </div>
               <div>
@@ -2211,6 +2635,15 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                   ))}
                 </select>
               </div>
+              <div>
+                <label className="block font-bold mb-1">Vehicle ID</label>
+                <input
+                  type="text"
+                  value={editDraft.courierVehicle}
+                  onChange={(e) => setEditDraft((d) => ({ ...d, courierVehicle: e.target.value }))}
+                  className="w-full border border-neutral-300 px-3 py-2"
+                />
+              </div>
               <div className="sm:col-span-2">
                 <label className="block font-bold mb-1">
                   Optional Timeline Checkpoint Scan Note
@@ -2223,9 +2656,81 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                   className="w-full border border-neutral-300 px-3 py-2"
                 />
               </div>
+
+              {/* Edit Parcel Pictures */}
+              <div className="sm:col-span-2 pt-2 border-t border-neutral-200 space-y-2">
+                <label className="block font-bold">
+                  Parcel Pictures ({editDraft.parcelImages.length}/6)
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  <label className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#FFCC00] border border-[#1d1d1f] font-bold cursor-pointer">
+                    <ImagePlus className="w-3.5 h-3.5" />
+                    <span>Upload Photos</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      onChange={(e) => {
+                        handleUploadEditImages(e.target.files);
+                        e.target.value = '';
+                      }}
+                      className="sr-only"
+                    />
+                  </label>
+                  <input
+                    type="url"
+                    placeholder="Paste image URL..."
+                    value={editImageUrlInput}
+                    onChange={(e) => setEditImageUrlInput(e.target.value)}
+                    className="flex-1 min-w-[160px] border border-neutral-300 px-2.5 py-1.5 text-xs"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const trimmed = editImageUrlInput.trim();
+                      if (!trimmed || editDraft.parcelImages.length >= 6) return;
+                      setEditDraft((d) => ({
+                        ...d,
+                        parcelImages: [...d.parcelImages, trimmed],
+                      }));
+                      setEditImageUrlInput('');
+                    }}
+                    className="px-3 py-1.5 bg-[#1d1d1f] text-[#FFCC00] font-bold cursor-pointer"
+                  >
+                    Add
+                  </button>
+                </div>
+                {editDraft.parcelImages.length > 0 && (
+                  <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 pt-1">
+                    {editDraft.parcelImages.map((imgSrc, idx) => (
+                      <div key={`edit-${idx}-${imgSrc.slice(0, 20)}`} className="relative border border-neutral-300">
+                        <img
+                          src={imgSrc}
+                          alt={`Parcel photo ${idx + 1}`}
+                          referrerPolicy="no-referrer"
+                          className="w-full h-20 object-cover"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setEditDraft((d) => ({
+                              ...d,
+                              parcelImages: d.parcelImages.filter((_, i) => i !== idx),
+                            }))
+                          }
+                          aria-label={`Remove edit photo ${idx + 1}`}
+                          className="absolute top-1 right-1 w-5 h-5 bg-[#1d1d1f] text-white flex items-center justify-center hover:bg-red-600 cursor-pointer"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
 
-            <div className="flex justify-end gap-3 pt-2">
+            <div className="flex justify-end gap-3 pt-2 border-t border-neutral-200">
               <button
                 type="button"
                 onClick={() => setEditingTrackingNo(null)}
@@ -2237,7 +2742,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                 type="submit"
                 className="px-6 py-2.5 bg-[#1d1d1f] text-[#FFCC00] text-xs font-extrabold cursor-pointer"
               >
-                Save Changes & Broadcast
+                Save Changes &amp; Broadcast
               </button>
             </div>
           </form>
